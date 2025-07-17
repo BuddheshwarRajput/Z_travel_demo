@@ -76,7 +76,7 @@ Follow these instructions to get a copy of the project up and running on your lo
 ### 1. Clone the Repository
 
 bash
-git clone https://github.com/your-username/travel-bot.git
+git clone [https://github.com/your-username/travel-bot.git](https://github.com/BuddheshwarRajput/Z_travel_demo.git)
 cd travel-bot
 IGNORE_WHEN_COPYING_START
 content_copy
