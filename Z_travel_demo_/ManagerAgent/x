@@ -1,146 +1,31 @@
 import pandas as pd
-import re
-import numpy as np
 
-# ==========================================
-# 1. SETUP & CONFIGURATION
-# ==========================================
+input_file_path = 'your_file.csv' # <--- Put your exact filename here
 
-# Load your CSV file here
-input_file_path = 'your_file.csv'  # <--- CHANGE THIS to your actual file name
-df = pd.read_csv(input_file_path)
-
-# Ensure the 'content_after_phrase' column is string type to avoid errors
-if 'content_after_phrase' in df.columns:
-    df['content_after_phrase'] = df['content_after_phrase'].astype(str)
-else:
-    raise ValueError("Input CSV must have 'content_after_phrase' column")
-
-# Initialize the lists used in your code (Image 25463)
-all_transcript_dataframes_list = []
-resultant_list = []
-final_dataframe = df  # Assuming the input CSV is your 'final_dataframe'
-
-# ==========================================
-# 2. DEFINE YOUR FUNCTIONS (From Images 25460, 25462, 25472)
-# ==========================================
-
-# Regex Patterns (Copy exact strings from Image 25460)
-number_pattern = r'\b\w*\d{10,}\w*\b|\b[A-Z][A-Z]\d{2,}' 
-email_pattern = r'hotmail|.uk\b|.bgmail\b' # (Simplify or paste your exact long string here)
-exact_pattern = r'\bStreet\b|\bHouse\b|\bDrive\b' # (Paste exact string from Image 25460)
-
-def replace_word_after_level1(text):
-    # Paste body from Image 25460
-    return re.sub(r'(my name is|address is|...)', '****', text, flags=re.IGNORECASE)
-
-def replace_word_after_level2(text):
-    # Paste body from Image 25460
-    return re.sub(r'(am i speaking to|...)', '****', text, flags=re.IGNORECASE)
-
-def replace_word_after_level3(text):
-    # Paste body from Image 25460
-    return re.sub(r'(good morning|how are you|...)', '****', text, flags=re.IGNORECASE)
-
-def replace_word_before_level(text):
-    # Paste body from Image 25462
-    return re.sub(r'\w+[,.\s]*\w+[.,\s]*', '****', text) # Approximate regex from image
-
-def find_list(dataframe, available_columns):
-    # Logic from Image 25462
-    list_to_return = []
-    stop_words = ['the', 'a']
-    try:
-        # Check for PERSON column
-        if 'PERSON' in dataframe.columns:
-             # (Add your PERSON split logic from Image 25462 here)
-             pass
+try:
+    # Load the file
+    df = pd.read_csv(input_file_path)
+    
+    print("--- DIAGNOSTIC REPORT ---")
+    print(f"Total Rows: {len(df)}")
+    print("\nColumn Names found:", list(df.columns))
+    
+    # Check 'content_after_phrase'
+    if 'content_after_phrase' in df.columns:
+        sample = df['content_after_phrase'].head(5).tolist()
+        print(f"\nFirst 5 rows of 'content_after_phrase': {sample}")
         
-        # Combine other columns
-        for col in available_columns:
-            if col != 'PERSON':
-                combined_list = dataframe[col].dropna().astype(str).tolist()
-                list_to_return.extend(combined_list)
-                
-        # Clean list
-        list_to_return = list(set(list_to_return))
-        list_to_return = [re.escape(x) for x in list_to_return if x not in stop_words and len(x) > 2]
+        null_count = df['content_after_phrase'].isnull().sum()
+        print(f"Number of empty rows in 'content_after_phrase': {null_count}")
         
-        pattern = '|'.join(list_to_return)
-        return pattern
-    except Exception as e:
-        return ""
+        if null_count == len(df):
+            print("\n!!! CRITICAL ISSUE: 'content_after_phrase' IS COMPLETELY EMPTY !!!")
+            print("Recommendation: You should probably use the 'body' column instead.")
+            
+    # Check 'body' just in case
+    if 'body' in df.columns:
+        sample_body = df['body'].head(3).tolist()
+        print(f"\nFirst 3 rows of 'body' column: {sample_body}")
 
-def is_asking_name(text):
-    # Logic from Image 25472
-    name_keywords = ["your name", "full name", "first name", "address"]
-    return any(keyword in text.lower() for keyword in name_keywords)
-
-def replace_names(text):
-    # Logic from Image 25473
-    # ... (Paste your logic for replace_names)
-    return text
-
-# ==========================================
-# 3. MAIN LOGIC LOOP (From Images 25463 & 25470)
-# ==========================================
-
-print("Starting processing...")
-
-# Group by Call ID (CRITICAL: Your CSV must have a 'callid' column)
-if 'callid' in final_dataframe.columns:
-    for callid, group_data in final_dataframe.groupby('callid'):
-        all_transcript_dataframes_list.append(group_data)
-else:
-    # If no callid, treat whole file as one group
-    all_transcript_dataframes_list.append(final_dataframe)
-
-call_counter = 0
-
-for data in all_transcript_dataframes_list:
-    call_counter += 1
-    print(f"Processing call {call_counter}")
-    
-    # Define columns to look for PII (Image 25463)
-    list_of_columns = ['PERSON', 'EMAIL', 'PHONE', 'LOCATION', 'date of birth', 'STORE_NAME', 'CreditCard']
-    available_columns = [col for col in list_of_columns if col in data.columns]
-    
-    data_filtered = data.copy()
-    data_done = data.copy()
-
-    # Create dynamic pattern from existing columns (Image 25470)
-    pattern = find_list(data, available_columns)
-    
-    # Apply Dynamic Redaction on 'content_after_phrase'
-    if len(pattern) > 0:
-        # Creates 'transcript' column from 'content_after_phrase' with redaction
-        data_done['transcript'] = data_filtered['content_after_phrase'].str.replace(pattern, '****', regex=True, case=False)
-        resultant_list.append(data_done)
-    else:
-        # Just copy content_after_phrase to transcript if no pattern found
-        data_done['transcript'] = data_filtered['content_after_phrase']
-        resultant_list.append(data_done)
-
-# Concatenate results
-resultant_list = [d for d in resultant_list if not d.empty]
-redacted_final_dataframe = pd.concat(resultant_list, ignore_index=True)
-
-# ==========================================
-# 4. FINAL CLEANUP & SAVE (From Images 25472 & 25473)
-# ==========================================
-
-# Apply the "Level" Regexes
-redacted_final_dataframe['transcript'] = redacted_final_dataframe['transcript'].astype(str)
-redacted_final_dataframe['transcript'] = redacted_final_dataframe['transcript'].apply(replace_word_after_level1)
-redacted_final_dataframe['transcript'] = redacted_final_dataframe['transcript'].apply(replace_word_after_level2)
-redacted_final_dataframe['transcript'] = redacted_final_dataframe['transcript'].apply(replace_word_after_level3)
-redacted_final_dataframe['transcript'] = redacted_final_dataframe['transcript'].apply(replace_word_before_level)
-
-# Apply simple patterns
-redacted_final_dataframe['transcript'] = redacted_final_dataframe['transcript'].str.replace(number_pattern, '****', regex=True, case=False)
-redacted_final_dataframe['transcript'] = redacted_final_dataframe['transcript'].str.replace(email_pattern, '****', regex=True, case=False)
-
-# Save to CSV
-output_filename = 'redacted_output.csv'
-redacted_final_dataframe.to_csv(output_filename, index=False)
-print(f"Done! Saved to {output_filename}")
+except Exception as e:
+    print(f"Error reading file: {e}")
