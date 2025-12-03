@@ -1,31 +1,103 @@
-import pandas as pd
+from typing import Optional, Dict, Any
+from pydantic import BaseModel
 
-input_file_path = 'your_file.csv' # <--- Put your exact filename here
+# --- 1. DEFINE THE PAYLOAD MODEL (Matches Frontend/Old Code) ---
+class UserQuery(BaseModel):
+    domain: str
+    demo_name: str
+    user_input: str
+    persona: str
+    session_id: Optional[str] = ''  # Frontend sends empty string '' for new calls
+    scenario: str
+    customer_details: Optional[Dict[str, Any]] = {}
+    n_question: Optional[str] = ''
+    closing_turn: Optional[str] = ''
+    utils: Optional[Dict[str, Any]] = {}
 
-try:
-    # Load the file
-    df = pd.read_csv(input_file_path)
-    
-    print("--- DIAGNOSTIC REPORT ---")
-    print(f"Total Rows: {len(df)}")
-    print("\nColumn Names found:", list(df.columns))
-    
-    # Check 'content_after_phrase'
-    if 'content_after_phrase' in df.columns:
-        sample = df['content_after_phrase'].head(5).tolist()
-        print(f"\nFirst 5 rows of 'content_after_phrase': {sample}")
+# --- 2. THE UPDATED ENDPOINT ---
+@app.post("/aa-api/v1/utility/get_query")
+async def chat(query: UserQuery):
+    try:
+        # A. HANDLE SESSION ID (Frontend sends '' for new calls)
+        sid = query.session_id
+        if not sid or sid == "":
+            sid = f"AA-{uuid.uuid4()}"
+            print(f"🆕 New Call Started via Frontend. Assigned SID: {sid}")
+
+        # B. RETRIEVE OR HEAL SESSION
+        session_data = session_store.get_object(sid)
         
-        null_count = df['content_after_phrase'].isnull().sum()
-        print(f"Number of empty rows in 'content_after_phrase': {null_count}")
-        
-        if null_count == len(df):
-            print("\n!!! CRITICAL ISSUE: 'content_after_phrase' IS COMPLETELY EMPTY !!!")
-            print("Recommendation: You should probably use the 'body' column instead.")
-            
-    # Check 'body' just in case
-    if 'body' in df.columns:
-        sample_body = df['body'].head(3).tolist()
-        print(f"\nFirst 3 rows of 'body' column: {sample_body}")
+        is_invalid = False
+        if session_data is None:
+            is_invalid = True
+        elif isinstance(session_data, dict) and "Message" in session_data:
+            is_invalid = True
+        elif isinstance(session_data, dict) and "chat_history" not in session_data:
+            is_invalid = True
 
-except Exception as e:
-    print(f"Error reading file: {e}")
+        if is_invalid:
+            print(f"⚠️ Initializing fresh session for {sid}")
+            # We store the customer_details from frontend into state, 
+            # just in case we want to use them dynamically later.
+            session_data = {
+                "chat_history": [],
+                "state": {
+                    "customer_details": query.customer_details,
+                    "persona": query.persona,
+                    "domain": query.domain
+                },
+                "agent_states": []
+            }
+            session_store.add_object(sid, session_data)
+
+        # C. PREPARE INPUTS
+        chat_history = session_data["chat_history"]
+        
+        # Add User Message to History
+        chat_history.append(HumanMessage(content=query.user_input))
+        session_store.update_chat_history(sid, HumanMessage(content=query.user_input))
+
+        agent_inputs = {
+            "input": query.user_input,
+            "chat_history": chat_history
+        }
+
+        # D. EXECUTE AGENT
+        result = await main_agent.ainvoke(agent_inputs)
+        output_text = result.get("output", str(result))
+
+        # E. UPDATE MEMORY
+        chat_history.append(AIMessage(content=output_text))
+        session_store.update_chat_history(sid, AIMessage(content=output_text))
+        
+        try:
+            session_store.update_node(sid)
+        except:
+            pass
+
+        # F. DETERMINE CALL STATUS (For Frontend Logic)
+        # If the agent says "Goodbye", tell frontend to terminate
+        call_status = "active"
+        if "goodbye" in output_text.lower() or "have a nice day" in output_text.lower():
+            call_status = "terminated"
+
+        # G. RETURN RESPONSE (Mapped to fit Frontend expectations)
+        # The frontend expects 'answer' dict inside the response usually, 
+        # or at least a structure it can parse. 
+        # Based on your request, I will return the clean structure but 
+        # ensure it accepts the Input Payload successfully.
+        
+        return {
+            "response": output_text, # Standard new field
+            "answer": {              # Backward compatibility field (if frontend uses this)
+                "customer_query": output_text,
+                "call_status": call_status
+            },
+            "session_id": sid,
+            "Agent_states": []
+        }
+
+    except Exception as e:
+        print("❌ CRITICAL ERROR IN CHAT ENDPOINT:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
