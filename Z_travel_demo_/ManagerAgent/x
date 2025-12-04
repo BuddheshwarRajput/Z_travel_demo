@@ -1,32 +1,16 @@
-from typing import Optional, Dict, Any
-from pydantic import BaseModel
-
-# --- 1. DEFINE THE PAYLOAD MODEL (Matches Frontend/Old Code) ---
-class UserQuery(BaseModel):
-    domain: str
-    demo_name: str
-    user_input: str
-    persona: str
-    session_id: Optional[str] = ''  # Frontend sends empty string '' for new calls
-    scenario: str
-    customer_details: Optional[Dict[str, Any]] = {}
-    n_question: Optional[str] = ''
-    closing_turn: Optional[str] = ''
-    utils: Optional[Dict[str, Any]] = {}
-
-# --- 2. THE UPDATED ENDPOINT ---
 @app.post("/aa-api/v1/utility/get_query")
 async def chat(query: UserQuery):
     try:
-        # A. HANDLE SESSION ID (Frontend sends '' for new calls)
+        # --- 1. SESSION ID MANAGEMENT ---
         sid = query.session_id
         if not sid or sid == "":
             sid = f"AA-{uuid.uuid4()}"
-            print(f"🆕 New Call Started via Frontend. Assigned SID: {sid}")
+            print(f"🆕 New Call Started. Assigned SID: {sid}")
 
-        # B. RETRIEVE OR HEAL SESSION
+        # --- 2. RETRIEVE OR HEAL SESSION ---
         session_data = session_store.get_object(sid)
         
+        # Check validity
         is_invalid = False
         if session_data is None:
             is_invalid = True
@@ -37,36 +21,57 @@ async def chat(query: UserQuery):
 
         if is_invalid:
             print(f"⚠️ Initializing fresh session for {sid}")
-            # We store the customer_details from frontend into state, 
-            # just in case we want to use them dynamically later.
             session_data = {
                 "chat_history": [],
-                "state": {
-                    "customer_details": query.customer_details,
-                    "persona": query.persona,
-                    "domain": query.domain
-                },
+                "state": {}, 
                 "agent_states": []
             }
             session_store.add_object(sid, session_data)
 
-        # C. PREPARE INPUTS
+        # --- 3. ONE-TIME STATE INITIALIZATION (The Logic You Requested) ---
+        
+        current_state = session_data["state"]
+        
+        # LOGIC: Only update IF payload has details AND state is currently empty of details.
+        # This prevents overwriting if the frontend sends empty details later.
+        if query.customer_details and not current_state.get("customer_details"):
+            
+            print(f"🔒 Locking in Customer Details for Session {sid} (One-Time Setup)")
+            
+            # 1. Save Customer Details
+            session_data["state"]["customer_details"] = query.customer_details
+            
+            # 2. Save Metadata (Persona/Domain)
+            session_data["state"]["persona"] = query.persona
+            session_data["state"]["domain"] = query.domain
+            
+            # 3. Commit to Store
+            session_store.add_object(sid, session_data)
+        
+        else:
+            # Optional: Debug log to show we are using existing memory
+            # print(f"ℹ️ Using existing state for {sid}")
+            pass
+
+        # --- 4. PREPARE INPUTS ---
         chat_history = session_data["chat_history"]
         
-        # Add User Message to History
         chat_history.append(HumanMessage(content=query.user_input))
         session_store.update_chat_history(sid, HumanMessage(content=query.user_input))
 
+        # We pass the state to the agent inputs so the agent can see the details
+        # regardless of whether they were set just now or 10 turns ago.
         agent_inputs = {
             "input": query.user_input,
-            "chat_history": chat_history
+            "chat_history": chat_history,
+            "state": session_data["state"] # Pass the persistent state
         }
 
-        # D. EXECUTE AGENT
+        # --- 5. EXECUTE AGENT ---
         result = await main_agent.ainvoke(agent_inputs)
         output_text = result.get("output", str(result))
 
-        # E. UPDATE MEMORY
+        # --- 6. UPDATE MEMORY ---
         chat_history.append(AIMessage(content=output_text))
         session_store.update_chat_history(sid, AIMessage(content=output_text))
         
@@ -75,21 +80,14 @@ async def chat(query: UserQuery):
         except:
             pass
 
-        # F. DETERMINE CALL STATUS (For Frontend Logic)
-        # If the agent says "Goodbye", tell frontend to terminate
+        # --- 7. RETURN RESPONSE ---
         call_status = "active"
         if "goodbye" in output_text.lower() or "have a nice day" in output_text.lower():
             call_status = "terminated"
-
-        # G. RETURN RESPONSE (Mapped to fit Frontend expectations)
-        # The frontend expects 'answer' dict inside the response usually, 
-        # or at least a structure it can parse. 
-        # Based on your request, I will return the clean structure but 
-        # ensure it accepts the Input Payload successfully.
         
         return {
-            "response": output_text, # Standard new field
-            "answer": {              # Backward compatibility field (if frontend uses this)
+            "response": output_text,
+            "answer": {
                 "customer_query": output_text,
                 "call_status": call_status
             },
