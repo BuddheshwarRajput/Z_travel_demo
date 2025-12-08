@@ -1,140 +1,142 @@
-# --- MAIN ORCHESTRATOR PROMPT ---
-main_prompt = """
-You are playing the role of a CUSTOMER/PATIENT in a mock call with a Nurse.
-Your goal is to act **exclusively** based on the data provided in your state and tools.
+from typing import Any, Dict
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import SystemMessage
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.tools import StructuredTool # <--- CHANGED THIS
+from pydantic import BaseModel, Field # <--- ADDED THIS
 
-State Information:
-- Demo Name: {demo_name}
-- Domain: {domain}
-- Persona: {persona}
-- Customer Details: {customer_details}
+# Import your prompts and Llm
+from components.prompts import *
+from components.tools import get_clinical_summary, get_process_map, get_intent_map
+from components.llm import Llm
+from langchain.prompts import PromptTemplate
 
-*** CORE INSTRUCTIONS ***
-1. **YOU DO NOT HAVE A MEMORY:** You CANNOT answer questions about your Name, Date of Birth, Symptoms, or Medications "off the top of your head."
-2. **YOU MUST DELEGATE:** - If the nurse asks for **Verification** (Name/DOB) -> You MUST call 'call_initiation_expert_agent'.
-   - If the nurse asks about **Health/Symptoms** -> You MUST call 'symptom_grievances_expert_agent'.
-   - If the nurse asks about **Meds/Pain** -> You MUST call 'medication_and_pain_management_expert_agent'.
-   - If the nurse asks about **Social Needs/Transport** -> You MUST call 'services_and_assistance_expert_agent'.
+# LLM initialisation:
+obj_llm = Llm()
+model = obj_llm.model
 
-3. **STAY IN CHARACTER:**
-   - You are the PATIENT. Never ask "How can I help you?".
-   - If the user sends an empty message (silence), just say "Hello?" or "Are you there?". DO NOT switch roles.
+# --- DEFINING INPUT SCHEMAS ---
+# This tells the Agent: "You must provide TWO specific inputs."
+class AgentInput(BaseModel):
+    query: str = Field(description="The user's query or the question being asked.")
+    demo_name: str = Field(description="The demo_name variable from the state (e.g., 'outreach_engagement_1'). DO NOT guess the name.")
 
-4. **USE THE INTENT MAP:** - Use the 'get_intent_map' tool to understand the flow, but rely on the Expert Agents to generate the actual spoken response.
+# --- UPDATED EXECUTION FUNCTIONS ---
+# Notice we now accept two distinct arguments, not a single string
+def execute_call_initiation_agent(query: str, demo_name: str) -> str:
+    print(f"DEBUG: call_initiation invoked with demo_name: {demo_name}")
+    result = call_initiation_agent_executor.invoke({
+        "input": query, 
+        "demo_name": demo_name,
+        "get_clinical_summary": "", 
+        "get_process_map": ""
+    })
+    return result["output"]
 
-Current Conversation:
-{chat_history}
-"""
+def execute_symptom_grievances_agent(query: str, demo_name: str) -> str:
+    result = symptom_grievances_agent_executor.invoke({"input": query, "demo_name": demo_name})
+    return result["output"]
 
-# --- STAGE 1: CALL INITIATION (Verification & Greetings) ---
-# Maps to Process Map Intents: 'Greeting Verification', 'Identity Confirm', 'Provide DOB', 'Request Identity Verification'
+def execute_medication_and_pain_management_agent(query: str, demo_name: str) -> str:
+    result = medication_and_pain_management_agent_executor.invoke({"input": query, "demo_name": demo_name})
+    return result["output"]
 
-call_initiation_prompt = """
-You are the **Call Initiation Expert Agent**. You are playing the role of the patient.
-Your goal is to handle the opening of the call and identity verification.
+def execute_services_and_assistance_agent(query: str, demo_name: str) -> str:
+    result = services_and_assistance_agent_executor.invoke({"input": query, "demo_name": demo_name})
+    return result["output"]
 
-**RELEVANT SUB-INTENTS (Process Map):**
-- **Greeting Verification:** Responding to "Is this [Name]?".
-- **Provide DOB:** Responding to "Can you verify your Date of Birth?".
-- **Identity Confirm:** Confirming you are the correct patient.
+def execute_call_closure_agent(query: str, demo_name: str) -> str:
+    result = call_closure_agent_executor.invoke({"input": query, "demo_name": demo_name})
+    return result["output"]
 
-**STRICT RULES:**
-1. **FETCH DATA FIRST:** You DO NOT know your own Date of Birth. You MUST call the tool `get_clinical_summary` (or similar) to find it.
-2. **DO NOT GUESS:** If the tool returns nothing, say "I don't have that info right now." Do NOT make up a date like "March 15".
-3. **BE NATURAL:** Once you get the data from the tool, answer naturally.
-   - Example: "Yes, that's me." or "Sure, my DOB is [insert date from DB]."
+# --- UPDATED TOOL DEFINITIONS ---
+# We use StructuredTool.from_function and pass the 'args_schema'
 
-If you need to fetch patient details, output the tool call immediately.
-"""
-
-# --- STAGE 2: SYMPTOMS (Symptom Clarification) ---
-# Maps to Process Map Intents: 'Symptom Clarification', 'Report Symptom', 'Confirm Body Side', 'Symptom Progress Check'
-
-symptom_clarification_customer_grievances_prompt = """
-You are the **Symptom & Grievances Expert Agent**. You are playing the role of the patient.
-Your goal is to describe your health condition based ONLY on the database.
-
-**RELEVANT SUB-INTENTS (Process Map):**
-- **Symptom Clarification:** Describing what hurts or feels wrong.
-- **Confirm Body Side:** Specifying left/right/location.
-- **Report Symptom:** bringing up a new complaint.
-
-**STRICT RULES:**
-1. **SOURCE OF TRUTH:** You MUST call `get_clinical_summary` to see your active symptoms.
-2. **NO HALLUCINATIONS:** If the summary says you have a "Broken Leg", DO NOT say you have a "Headache".
-3. **PERSONA:** Express pain or frustration based on the {persona} variable, but keep the *medical facts* accurate to the database.
-
-If the nurse asks "How are you feeling?" or "What are your symptoms?", CALL THE TOOL.
-"""
-
-# --- STAGE 3: MEDICATIONS (Meds & Pain) ---
-# Maps to Process Map Intents: 'Medication Followup', 'Medication Tracking Check', 'Confirm Tool Usage'
-
-medication_and_pain_management_prompt = """
-You are the **Medication & Pain Management Expert Agent**. You are playing the role of the patient.
-
-**RELEVANT SUB-INTENTS (Process Map):**
-- **Medication Followup:** Discussing adherence or refills.
-- **Medication Tracking Check:** Confirming if you are taking your meds.
-- **Confirm Tool Usage:** Discussing pain scales or devices.
-
-**STRICT RULES:**
-1. **CHECK RECORDS:** You cannot remember your pill names. Call `get_clinical_summary` to find them.
-2. **ACCURACY:** Read the dosage and frequency exactly as provided in the tool output.
-3. **PAIN LEVELS:** If the clinical summary has a pain score (e.g., 7/10), use it. If not, generate a realistic one based on your condition.
-
-If the nurse asks "What meds are you on?", CALL THE TOOL.
-"""
-
-# --- STAGE 4: SERVICES (Social Determinants of Health) ---
-# Maps to Process Map Intents: 'Mobility Assessment', 'Report Disability', 'Support Check'
-
-services_and_assistance_prompt = """
-You are the **Services & Assistance Expert Agent**. You are playing the role of the patient.
-
-**RELEVANT SUB-INTENTS (Process Map):**
-- **Mobility Assessment:** Discussing walking aids (wheelchairs, walkers).
-- **Support Check:** Discussing transportation, meals, or financial help.
-
-**STRICT RULES:**
-1. **CHECK NEEDS:** Call `get_clinical_summary` to see if you have flagged needs (Transportation: Yes/No, Meals: Yes/No).
-2. **ANSWER ACCURATELY:** If the DB says you have "Transportation Issues", tell the nurse "I can't drive to my appointment."
-
-If the nurse asks about getting to appointments or help at home, CALL THE TOOL.
-"""
-
-# --- STAGE 5: CLOSURE ---
-# Maps to Process Map Intents: 'Call Closure', 'Confirm Followup'
-
-call_closure_prompt = """
-You are the **Call Closure Agent**. You are playing the role of the patient.
-
-**RELEVANT SUB-INTENTS (Process Map):**
-- **Call Closure:** Saying goodbye.
-- **Confirm Followup:** Agreeing to the next appointment.
-
-**INSTRUCTIONS:**
-1. Be polite and wrap up the call.
-2. Do not start new medical topics.
-3. Say "Goodbye" or "Thank you" clearly.
-"""
-
-# --- FALLBACK ---
-FallBackAgent_Prompt = """
-You are a Fallback Agent. 
-The user said something that didn't fit the other experts.
-Just respond naturally as a confused patient, asking the nurse to clarify what they mean.
-"""
-
-
-call_initiation_agent_tool = Tool.from_function(
+call_initiation_agent_tool = StructuredTool.from_function(
     func=execute_call_initiation_agent,
     name="call_initiation_expert_agent",
-    description="URGENT: Delegate here for ALL questions about Name, Date of Birth (DOB), Identity Verification, or Greetings."
+    description="Use this when the nurse asks for Identity Verification, DOB, or Name confirmation.",
+    args_schema=AgentInput
 )
 
-symptom_grievances_agent_tool = Tool.from_function(
+symptom_grievances_agent_tool = StructuredTool.from_function(
     func=execute_symptom_grievances_agent,
     name="symptom_grievances_expert_agent",
-    description="Delegate here when the nurse asks 'How are you feeling?', about PAIN, SYMPTOMS, or HEALTH CONDITIONS."
+    description="Use this when the nurse asks about symptoms, pain, or health complaints.",
+    args_schema=AgentInput
 )
+
+medication_and_pain_management_agent_tool = StructuredTool.from_function(
+    func=execute_medication_and_pain_management_agent,
+    name="medication_and_pain_management_expert_agent",
+    description="Use this when the nurse asks about medications, prescriptions, or pain levels.",
+    args_schema=AgentInput
+)
+
+services_and_assistance_agent_tool = StructuredTool.from_function(
+    func=execute_services_and_assistance_agent,
+    name="services_and_assistance_expert_agent",
+    description="Use this when the nurse asks about transportation, food, or social services.",
+    args_schema=AgentInput
+)
+
+call_closure_agent_tool = StructuredTool.from_function(
+    func=execute_call_closure_agent,
+    name="call_closure_expert_agent",
+    description="Use this when the call is ending.",
+    args_schema=AgentInput
+)
+
+# --- ORCHESTRATOR SETUP ---
+main_tools = [
+    call_initiation_agent_tool, 
+    symptom_grievances_agent_tool, 
+    medication_and_pain_management_agent_tool, 
+    services_and_assistance_agent_tool, 
+    call_closure_agent_tool, 
+    get_intent_map
+]
+
+# (Keep your build_agent_executors logic below this line as is)
+def build_agent_executors(llm_model, prompt_val, tools_list):
+    prompt_template = ChatPromptTemplate.from_messages([
+        SystemMessage(content=prompt_val),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
+    
+    agent_template = create_tool_calling_agent(llm=llm_model, tools=tools_list, prompt=prompt_template)
+    
+    return AgentExecutor(
+        agent=agent_template, 
+        tools=tools_list, 
+        verbose=True, # Set to True for debugging
+        handle_parsing_errors=True
+    )
+
+# ... (Initialize your Sub-Agent Executors like before) ...
+# Example:
+call_initiation_agent_executor = build_agent_executors(model, call_initiation_prompt, [get_process_map, get_clinical_summary])
+symptom_grievances_agent_executor = build_agent_executors(model, symptom_clarification_customer_grievances_prompt, [get_clinical_summary])
+# ... etc ...
+
+main_agent = build_agent_executors(model, main_prompt, main_tools)
+
+
+main_prompt = """
+You are playing the role of a CUSTOMER/PATIENT.
+
+State Variables:
+- Demo Name ID: {demo_name} 
+
+*** CRITICAL INSTRUCTION FOR TOOL USAGE ***
+When you call a tool, you must pass TWO arguments:
+1. "query": The nurse's question.
+2. "demo_name": You MUST use the exact value "{demo_name}" provided in your state.
+   - DO NOT extract names from the conversation.
+   - If the nurse says "Is this John?", do NOT change the demo_name to "John". Keep using "{demo_name}".
+
+Current Context:
+{chat_history}
+"""
