@@ -1,3 +1,175 @@
+from functools import partial
+from langchain.tools import Tool, StructuredTool
+from pydantic import BaseModel, Field
+
+# ... (Keep your imports and LLM init) ...
+
+# 1. INPUT SCHEMA (Keep this strictly defined)
+class AgentInput(BaseModel):
+    query: str = Field(description="The user's question.")
+    demo_name: str = Field(description="The database configuration ID (e.g., 'outreach_engagement_1').")
+
+# 2. UPDATED EXECUTION FUNCTIONS (THE FIX)
+def execute_call_initiation_agent(query: str, demo_name: str) -> str:
+    print(f"DEBUG: Binding demo_name='{demo_name}' to Call Initiation Tools")
+    
+    # --- MAGIC FIX: CREATE SPECIALIZED TOOLS FOR THIS SPECIFIC CALL ---
+    # We create a new version of the tool that ALREADY has the demo_name filled in.
+    # The agent sees a tool that needs NO demo_name argument.
+    
+    safe_summary_tool = Tool.from_function(
+        func=lambda x: get_clinical_summary(demo_name=demo_name), # Force use of parent demo_name
+        name="get_clinical_summary",
+        description="Returns the patient's DOB, Name, and Verification info. No input required."
+    )
+
+    safe_process_tool = Tool.from_function(
+        func=lambda x: get_process_map(demo_name=demo_name),
+        name="get_process_map",
+        description="Returns the call script. No input required."
+    )
+    
+    # Re-build the agent for this specific turn with the "Safe" tools
+    # Note: We build a temporary agent here to ensure the tools are bound correctly
+    agent_executor = build_agent_executors(
+        model, 
+        call_initiation_prompt, 
+        [safe_summary_tool, safe_process_tool] 
+    )
+
+    result = agent_executor.invoke({
+        "input": query, 
+        "chat_history": [] 
+    })
+    return result["output"]
+
+def execute_symptom_grievances_agent(query: str, demo_name: str) -> str:
+    print(f"DEBUG: Binding demo_name='{demo_name}' to Symptom Tools")
+    
+    safe_summary_tool = Tool.from_function(
+        func=lambda x: get_clinical_summary(demo_name=demo_name),
+        name="get_clinical_summary",
+        description="Returns patient symptoms and medical history. No input required."
+    )
+
+    agent_executor = build_agent_executors(
+        model, 
+        symptom_clarification_customer_grievances_prompt, 
+        [safe_summary_tool] 
+    )
+
+    result = agent_executor.invoke({
+        "input": query, 
+        "chat_history": [] 
+    })
+    return result["output"]
+
+def execute_medication_and_pain_management_agent(query: str, demo_name: str) -> str:
+    safe_summary_tool = Tool.from_function(
+        func=lambda x: get_clinical_summary(demo_name=demo_name),
+        name="get_clinical_summary",
+        description="Returns medication list and pain levels. No input required."
+    )
+    
+    agent_executor = build_agent_executors(
+        model, 
+        medication_and_pain_management_prompt, 
+        [safe_summary_tool]
+    )
+    
+    result = agent_executor.invoke({"input": query, "chat_history": []})
+    return result["output"]
+
+def execute_services_and_assistance_agent(query: str, demo_name: str) -> str:
+    safe_summary_tool = Tool.from_function(
+        func=lambda x: get_clinical_summary(demo_name=demo_name),
+        name="get_clinical_summary",
+        description="Returns social services needs. No input required."
+    )
+
+    agent_executor = build_agent_executors(
+        model, 
+        services_and_assistance_prompt, 
+        [safe_summary_tool]
+    )
+    
+    result = agent_executor.invoke({"input": query, "chat_history": []})
+    return result["output"]
+
+def execute_call_closure_agent(query: str, demo_name: str) -> str:
+    safe_process_tool = Tool.from_function(
+        func=lambda x: get_process_map(demo_name=demo_name),
+        name="get_process_map",
+        description="Returns closure scripts. No input required."
+    )
+    
+    agent_executor = build_agent_executors(
+        model, 
+        call_closure_prompt, 
+        [safe_process_tool]
+    )
+    
+    result = agent_executor.invoke({"input": query, "chat_history": []})
+    return result["output"]
+
+
+# 3. TOOL DEFINITIONS (Main Agent sees these)
+# These remain the same because the Main Agent DOES need to provide the demo_name.
+call_initiation_agent_tool = StructuredTool.from_function(
+    func=execute_call_initiation_agent,
+    name="call_initiation_expert_agent",
+    description="For Verification/DOB/Name. Requires 'query' and 'demo_name'.",
+    args_schema=AgentInput
+)
+
+symptom_grievances_agent_tool = StructuredTool.from_function(
+    func=execute_symptom_grievances_agent,
+    name="symptom_grievances_expert_agent",
+    description="For Symptoms/Pain. Requires 'query' and 'demo_name'.",
+    args_schema=AgentInput
+)
+
+medication_and_pain_management_agent_tool = StructuredTool.from_function(
+    func=execute_medication_and_pain_management_agent,
+    name="medication_and_pain_management_expert_agent",
+    description="For Meds/Prescriptions. Requires 'query' and 'demo_name'.",
+    args_schema=AgentInput
+)
+
+services_and_assistance_agent_tool = StructuredTool.from_function(
+    func=execute_services_and_assistance_agent,
+    name="services_and_assistance_expert_agent",
+    description="For Social Services/Transport. Requires 'query' and 'demo_name'.",
+    args_schema=AgentInput
+)
+
+call_closure_agent_tool = StructuredTool.from_function(
+    func=execute_call_closure_agent,
+    name="call_closure_expert_agent",
+    description="For closing the call. Requires 'query' and 'demo_name'.",
+    args_schema=AgentInput
+)
+
+# ... (Main Agent Build Logic) ...
+main_tools = [
+    call_initiation_agent_tool, 
+    symptom_grievances_agent_tool, 
+    medication_and_pain_management_agent_tool, 
+    services_and_assistance_agent_tool, 
+    call_closure_agent_tool, 
+    get_intent_map
+]
+
+# Note: We do NOT initialize the sub-agent executors globally anymore 
+# because we build them dynamically inside the execute functions.
+# Remove lines like: "call_initiation_agent_executor = build_agent_..." 
+# The global "main_agent" remains.
+
+main_agent = build_agent_executors(model, main_prompt, main_tools)
+
+
+
+
 from langchain.tools import Tool, StructuredTool
 from pydantic import BaseModel, Field
 
