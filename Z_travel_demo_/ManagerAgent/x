@@ -1,3 +1,78 @@
+This log is extremely helpful. It confirms two major issues causing your chaos:
+The Crash (NoneType error): Your code is trying to read a Process Map for outreach_and_engagement_1, but the database is returning None (empty). The code then crashes because it tries to read the "empty" result.
+The Hallucination: Because the tools fail (due to the crash or missing data), the Agent has zero context. It doesn't know its birthday, so it makes one up ("March 15", then "Feb 16"). It doesn't even know who it is, which is why it suddenly says "I'm the nurse you'll be speaking with" (Persona Inversion).
+Here is the fix for the critical crash and the database issue.
+1. Fix the Crash in exec_queries.py
+Your function get_process_map_by_demo_name crashes when the database returns nothing. You need to handle the None case safely.
+Replace your get_process_map_by_demo_name function with this:
+def get_process_map_by_demo_name(demo_name: str):
+    """
+    Retrieve the process map associated with a given demo name from the database.
+    """
+    try:
+        print(f"\n\nExecuting get_process_map_by_demo_name for: {demo_name}\n\n")
+        
+        map_id_dict = get_map_id_by_demo_name(demo_name)
+        
+        # SAFETY CHECK: If map_id_dict is None, we cannot check 'in' operator on it
+        if not map_id_dict:
+            print(f"CRITICAL WARNING: No Process Map found in DB for demo_name: '{demo_name}'")
+            # Return an empty structure so the agent doesn't crash, just acts dumb
+            return {"process_flow_map": {}, "stages": []}
+
+        if 'map_id' in map_id_dict:
+            return get_process_map_by_map_id(map_id_dict['map_id'])
+            
+        return {"message": "Invalid demo_name or Map ID not found"}
+
+    except Exception as e:
+        print(f"\n\nError getting process map: \n{str(e)}\n\n")
+        return {"error": str(e)}
+
+2. Verify Your Database Data (The Root Cause)
+The logs explicitly say:
+Query executed. Fetched one row: None
+This means outreach_and_engagement_1 is NOT in your database.
+Did you run the insertion script? You have insert_process_map functions in exec_queries.py, but are they being called?
+Check the naming: Is the folder/filename exactly outreach_and_engagement_1.json in your process_maps folder?
+Fix: You likely need to run a setup script (like python exec_queries.py) to actually insert the JSON files into your local DB before starting the server.
+3. Fix the "Persona Flip" (I am the Nurse)
+In your conversation log, your bot said: "I'm the nurse you'll be speaking with."
+This happens because the prompt is confusing the LLM. It sees "Nurse" in the system prompt and forgets it is playing the Customer.
+Update prompt.py -> main_prompt:
+Change the definition slightly to be more forceful about negative constraints:
+
+main_prompt = """
+You are playing the role of a CUSTOMER named {customer_details}.
+You are interacting with a Nurse Agent.
+
+CRITICAL ROLE-PLAY RULES:
+1. YOU ARE THE PATIENT/CUSTOMER. You are NOT the nurse.
+2. NEVER introduce yourself as the nurse.
+3. NEVER ask "How can I help you?". You are the one receiving the call.
+4. If the nurse asks for verification, answer naturally.
+...
+"""
+
+
+4. Fix the "Date of Birth" Hallucination
+The bot gave two different birthdays because it couldn't reach the database (due to the issues above) to get the real fake birthday.
+Once you fix Step 1 (Crash) and Step 2 (Data Insertion), the Agent will be able to read the real DOB from the clinical_summary and stop guessing.
+Summary Checklist for you:
+Stop the server.
+Run your database insertion script to ensure outreach_and_engagement_1 actually exists in your tables.
+Apply the code fix to exec_queries.py (above) to prevent the "NoneType" crash.
+Apply the code fix to agentuptil.py (from my previous answer) to ensure demo_name is passed to the tools.
+Restart the server.
+
+
+
+
+
+
+
+
+
 Based on the code provided, I have identified the core problem. It is a State Propagation Issue (specifically regarding demo_name).
 ​The Diagnosis
 ​Your system is a Hierarchical Agent System (Orchestrator -> Sub-Agents).
