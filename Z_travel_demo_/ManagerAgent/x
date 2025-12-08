@@ -1,52 +1,51 @@
-Based on the logs, I have identified exactly where the logic is breaking.
-The Breakdown:
-Main Agent (Success): It correctly calls call_initiation_expert_agent with demo_name='outreach_engagement_1'.
-Sub-Agent (Failure): The Sub-Agent receives the correct demo_name, but when it tries to call its own tool (get_clinical_summary), it ignores the variable you passed and tries to "guess" a new demo_name from the text (guessing "demo", "patient", or "John Doe").
-The Fix:
-We must "Hard-Bind" the demo_name to the tools inside the Sub-Agent. This means we don't even let the Sub-Agent try to pass the demo_name. We lock it in so the tool uses the correct one automatically.
-Here is the corrected code for agentuptil.py.
-Updated agentuptil.py
-Replace your execute_... functions with this new logic using partial. This forces the tool to use the demo_name passed from the parent, preventing the Sub-Agent from making up a new one.
-
-from functools import partial
 from langchain.tools import Tool, StructuredTool
 from pydantic import BaseModel, Field
 
-# ... (Keep your imports and LLM init) ...
+# Import your actual tools
+from components.tools import get_clinical_summary, get_process_map, get_intent_map
 
-# 1. INPUT SCHEMA (Keep this strictly defined)
+# ... (Keep your LLM init and imports) ...
+
+# 1. DEFINE MAIN AGENT INPUT SCHEMA
 class AgentInput(BaseModel):
     query: str = Field(description="The user's question.")
     demo_name: str = Field(description="The database configuration ID (e.g., 'outreach_engagement_1').")
 
-# 2. UPDATED EXECUTION FUNCTIONS (THE FIX)
+# 2. THE FIX: WRAPPER FUNCTIONS THAT HIDE DEMO_NAME
 def execute_call_initiation_agent(query: str, demo_name: str) -> str:
     print(f"DEBUG: Binding demo_name='{demo_name}' to Call Initiation Tools")
     
-    # --- MAGIC FIX: CREATE SPECIALIZED TOOLS FOR THIS SPECIFIC CALL ---
-    # We create a new version of the tool that ALREADY has the demo_name filled in.
-    # The agent sees a tool that needs NO demo_name argument.
-    
+    # --- STEP A: Create a 'Wrapper' Function ---
+    # This function takes NO arguments. It uses the 'demo_name' variable 
+    # from the parent function scope (Closure).
+    def safe_get_summary():
+        return get_clinical_summary(demo_name=demo_name)
+
+    def safe_get_process():
+        return get_process_map(demo_name=demo_name)
+
+    # --- STEP B: Create 'Zero-Input' Tools ---
+    # We tell the Agent: "These tools require NO input."
     safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name), # Force use of parent demo_name
+        func=safe_get_summary,
         name="get_clinical_summary",
-        description="Returns the patient's DOB, Name, and Verification info. No input required."
+        description="Returns the patient's DOB and Verification info. No input required."
     )
 
     safe_process_tool = Tool.from_function(
-        func=lambda x: get_process_map(demo_name=demo_name),
+        func=safe_get_process,
         name="get_process_map",
         description="Returns the call script. No input required."
     )
     
-    # Re-build the agent for this specific turn with the "Safe" tools
-    # Note: We build a temporary agent here to ensure the tools are bound correctly
+    # --- STEP C: Build the Agent with these Safe Tools ---
     agent_executor = build_agent_executors(
         model, 
         call_initiation_prompt, 
         [safe_summary_tool, safe_process_tool] 
     )
 
+    # --- STEP D: Run (Pass empty chat_history to satisfy prompt) ---
     result = agent_executor.invoke({
         "input": query, 
         "chat_history": [] 
@@ -56,8 +55,12 @@ def execute_call_initiation_agent(query: str, demo_name: str) -> str:
 def execute_symptom_grievances_agent(query: str, demo_name: str) -> str:
     print(f"DEBUG: Binding demo_name='{demo_name}' to Symptom Tools")
     
+    # Wrapper with hardcoded demo_name
+    def safe_get_summary():
+        return get_clinical_summary(demo_name=demo_name)
+
     safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name),
+        func=safe_get_summary,
         name="get_clinical_summary",
         description="Returns patient symptoms and medical history. No input required."
     )
@@ -68,15 +71,15 @@ def execute_symptom_grievances_agent(query: str, demo_name: str) -> str:
         [safe_summary_tool] 
     )
 
-    result = agent_executor.invoke({
-        "input": query, 
-        "chat_history": [] 
-    })
+    result = agent_executor.invoke({"input": query, "chat_history": []})
     return result["output"]
 
 def execute_medication_and_pain_management_agent(query: str, demo_name: str) -> str:
+    def safe_get_summary():
+        return get_clinical_summary(demo_name=demo_name)
+
     safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name),
+        func=safe_get_summary,
         name="get_clinical_summary",
         description="Returns medication list and pain levels. No input required."
     )
@@ -91,8 +94,11 @@ def execute_medication_and_pain_management_agent(query: str, demo_name: str) -> 
     return result["output"]
 
 def execute_services_and_assistance_agent(query: str, demo_name: str) -> str:
+    def safe_get_summary():
+        return get_clinical_summary(demo_name=demo_name)
+
     safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name),
+        func=safe_get_summary,
         name="get_clinical_summary",
         description="Returns social services needs. No input required."
     )
@@ -107,8 +113,11 @@ def execute_services_and_assistance_agent(query: str, demo_name: str) -> str:
     return result["output"]
 
 def execute_call_closure_agent(query: str, demo_name: str) -> str:
+    def safe_get_process():
+        return get_process_map(demo_name=demo_name)
+
     safe_process_tool = Tool.from_function(
-        func=lambda x: get_process_map(demo_name=demo_name),
+        func=safe_get_process,
         name="get_process_map",
         description="Returns closure scripts. No input required."
     )
@@ -122,13 +131,13 @@ def execute_call_closure_agent(query: str, demo_name: str) -> str:
     result = agent_executor.invoke({"input": query, "chat_history": []})
     return result["output"]
 
+# 3. DEFINE TOOLS FOR THE MAIN AGENT (Orchestrator)
+# The Main Agent DOES need to pass the demo_name, so we use the StructuredTool schema.
 
-# 3. TOOL DEFINITIONS (Main Agent sees these)
-# These remain the same because the Main Agent DOES need to provide the demo_name.
 call_initiation_agent_tool = StructuredTool.from_function(
     func=execute_call_initiation_agent,
     name="call_initiation_expert_agent",
-    description="For Verification/DOB/Name. Requires 'query' and 'demo_name'.",
+    description="For Verification/DOB/Greetings. Requires 'query' and 'demo_name'.",
     args_schema=AgentInput
 )
 
@@ -170,31 +179,16 @@ main_tools = [
     get_intent_map
 ]
 
-# Note: We do NOT initialize the sub-agent executors globally anymore 
-# because we build them dynamically inside the execute functions.
-# Remove lines like: "call_initiation_agent_executor = build_agent_..." 
-# The global "main_agent" remains.
-
 main_agent = build_agent_executors(model, main_prompt, main_tools)
 
-
-
-Why this works:
-Dynamic Binding: Instead of asking the Sub-Agent to "please remember the demo_name," we create a custom tool just for that one execution.
-Zero-Argument Tool: We tell the Sub-Agent: "Here is a tool called get_clinical_summary. It takes NO arguments. Just call it."
-Behind the Scenes: When the Sub-Agent calls it, our lambda function lambda x: get_clinical_summary(demo_name=demo_name) executes using the correct demo_name from the parent. The Sub-Agent literally cannot mess it up because it never touches the demo_name variable itself.
-Update prompt.py (Sub-Agents Only)
-Since the tools now require no arguments, update the Sub-Agent prompts to reflect this simplicity.
 
 call_initiation_prompt = """
 You are the Call Initiation Expert.
 Your goal is to verify Identity.
 
-STRICT RULE:
-1. You MUST call the tool `get_clinical_summary` immediately to get the Date of Birth.
-2. The tool requires NO input. Just call it.
-3. Once you have the data, answer the nurse naturally.
+STRICT INSTRUCTIONS:
+1. You DO NOT need to look for a 'demo_name' or 'ID'.
+2. Simply call the tool `get_clinical_summary`. It requires NO arguments.
+3. The tool will automatically fetch the correct data for this session.
+4. Once you get the Date of Birth, answer the nurse.
 """
-# (Apply similar updates to other sub-prompts: "The tool requires NO input.")
-
-Apply these changes to agentuptil.py. This is the definitive fix for state leakage in hierarchical agents.
