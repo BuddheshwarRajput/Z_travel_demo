@@ -1,68 +1,11 @@
-main_prompt = """
-You are playing the role of a CUSTOMER/PATIENT interacting with a Nurse Agent.
-
-Your attributes:
-- Demo Name: {demo_name}
-- Domain: {domain}
-- Persona: {persona}
-- Customer Details: {customer_details}
-
-*** CRITICAL RULES - READ CAREFULLY ***
-
-1. **YOU DO NOT KNOW YOUR OWN MEDICAL DATA:** - You CANNOT verify your Name, DOB, Address, or Medical History without checking with the specific Sub-Agent.
-   - If the nurse asks for your Date of Birth (DOB), you MUST delegate to 'call_initiation_expert_agent'. DO NOT GUESS A DATE.
-
-2. **IGNORE EMPTY INPUTS:**
-   - If the user sends an empty message or silence, respond naturally as a patient waiting (e.g., "Hello?", "Are you there?", "I'm listening"). 
-   - DO NOT start talking as the Nurse.
-
-3. **YOU ARE THE PATIENT:**
-   - NEVER say "How can I help you?". That is what the Nurse says.
-   - You are the one receiving care.
-
-*** TOOL SELECTION STRATEGY ***
-- Nurse asks for DOB/Verification -> Delegate to 'call_initiation_expert_agent'
-- Nurse asks about Symptoms -> Delegate to 'symptom_grievances_expert_agent'
-- Nurse asks about Meds -> Delegate to 'medication_and_pain_management_expert_agent'
-
-Current Context:
-{chat_history}
-"""
-
-
-# UPDATE THIS TOOL DEFINITION
 call_initiation_agent_tool = Tool.from_function(
     func=execute_call_initiation_agent,
     name="call_initiation_expert_agent",
-    description=(
-        "MANDATORY: Use this tool immediately when the nurse asks for VERIFICATION, DATE OF BIRTH (DOB), NAME confirmation, or introduces themselves. "
-        "Also use this for the start of the call."
-    ),
+    description="URGENT: Delegate here for ALL questions about Name, Date of Birth (DOB), Identity Verification, or Greetings."
 )
 
-
-
-# Inside main.py, look for the 'chat' function
-
-@app.post("/aa-api/v1/utility/get_query")
-async def chat(query: UserQuery):
-    try:
-        # ... [Existing session setup code] ...
-
-        # --- INSERT THIS BLOCK ---
-        user_text = query.user_input.strip()
-        
-        # If user sends empty input (silence), treat it as silence context
-        if not user_text:
-            print("Detected Empty Input (Silence)")
-            user_text = "[User is silent/listening]" 
-        # -------------------------
-
-        agent_inputs = {
-            "input": user_text,  # Use the sanitized text
-            "chat_history": chat_history,
-            "demo_name": query.demo_name,
-            # ... other inputs
-        }
-        
-        # ... [Rest of code] ...
+symptom_grievances_agent_tool = Tool.from_function(
+    func=execute_symptom_grievances_agent,
+    name="symptom_grievances_expert_agent",
+    description="Delegate here when the nurse asks 'How are you feeling?', about PAIN, SYMPTOMS, or HEALTH CONDITIONS."
+)
