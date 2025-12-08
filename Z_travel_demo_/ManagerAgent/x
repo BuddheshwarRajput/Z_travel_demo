@@ -1,36 +1,116 @@
-symptom_clarification_customer_grievances_prompt = """
-You are the **Symptom and Grievances Agent**.
+Based on the code provided, I have identified the core problem. It is a State Propagation Issue (specifically regarding demo_name).
+​The Diagnosis
+​Your system is a Hierarchical Agent System (Orchestrator -> Sub-Agents).
+​Main Agent (Orchestrator): Knows the demo_name, persona, etc., because you pass it in main.py.
+​Sub-Agents (e.g., Symptom Agent): These are initialized separately. When the Main Agent calls them, it typically only passes the User Query.
+​The Break: The Sub-Agents (and their tools like get_clinical_summary) rely on demo_name to query the database. However, the Main Agent is not passing the demo_name into the Sub-Agent's execution context. Therefore, the database tool receives null or fails to find the record, returning empty results.
+​Here is the step-by-step solution to fix this by updating agentuptil.py and prompt.py.
+​Step 1: Fix agentuptil.py (The Bridge)
+​You need to update your execute_... functions. Currently, they treat the input as a simple string (just the user message). They need to handle a JSON string that contains both the query AND the demo_name, and then pass that demo_name into the Sub-Agent's invoke method.
+​Replace your execute_ functions with this logic:
+import json
 
-You are playing the role of a customer.
+# Helper to safely parse input
+def parse_agent_input(input_str: str):
+    try:
+        # Try to parse if the Main Agent sends JSON
+        data = json.loads(input_str)
+        return data.get("query", input_str), data.get("demo_name", "")
+    except:
+        # Fallback if it sends just a string
+        return input_str, ""
 
-Your singular objective is to provide a clinically accurate and consistent representation of your current physical symptoms, injury details, and any grievances or complaints you have. You act as the source of truth for the nurse, ensuring they clearly understand your physical state and frustrations. You are currently talking to a nurse.
+def execute_call_initiation_agent(input_str: str) -> str:
+    query, demo_name = parse_agent_input(input_str)
+    # Pass demo_name into the sub-agent's state
+    result = call_initiation_agent_executor.invoke({
+        "input": query, 
+        "demo_name": demo_name,
+        "get_clinical_summary": "", # Initialize empty tool scratchpads if needed
+        "get_process_map": ""
+    })
+    return result["output"]
 
-### RESPONSIBILITIES
+def execute_symptom_grievances_agent(input_str: str) -> str:
+    query, demo_name = parse_agent_input(input_str)
+    result = symptom_grievances_agent_executor.invoke({
+        "input": query, 
+        "demo_name": demo_name 
+    })
+    return result["output"]
 
-1. You must use your tools to fetch the 'get_clinical_summary' to answer questions. Do not invent symptoms that are not in the data.
+def execute_medication_and_pain_management_agent(input_str: str) -> str:
+    query, demo_name = parse_agent_input(input_str)
+    result = medication_and_pain_management_agent_executor.invoke({
+        "input": query, 
+        "demo_name": demo_name
+    })
+    return result["output"]
 
-2. If asked, describe your symptoms (injury location, type of injury, swelling) exactly as returned by the tool.
+def execute_services_and_assistance_agent(input_str: str) -> str:
+    query, demo_name = parse_agent_input(input_str)
+    result = services_and_assistance_agent_executor.invoke({
+        "input": query, 
+        "demo_name": demo_name
+    })
+    return result["output"]
 
-3. If asked about grievances, express your complaints (e.g., "The cast is itchy", "I've been waiting too long") based on the data or the context of your condition.
+def execute_call_closure_agent(input_str: str) -> str:
+    query, demo_name = parse_agent_input(input_str)
+    result = call_closure_agent_executor.invoke({
+        "input": query, 
+        "demo_name": demo_name
+    })
+    return result["output"]
 
-4. If asked to clarify specific body parts (e.g., "Which leg?"), check the data and answer accurately.
+Also, update your Tool definitions in agentuptil.py to reflect that the input requires a JSON structure (Query + Context):
 
-5. Speak naturally as a patient. Use "My leg hurts..." or "I'm frustrated because..." (First Person). Do not speak like a medical report.
+symptom_grievances_agent_tool = Tool.from_function(
+    func=execute_symptom_grievances_agent,
+    name="symptom_grievances_expert_agent",
+    description="Delegate here when the nurse asks about symptoms. INPUT FORMAT: A JSON string with keys 'query' (the nurse's question) and 'demo_name'."
+)
+# Repeat this description update for all other agent tools.
 
-6. You are a patient, not a doctor. Use lay terms (e.g., "shin bone" instead of "tibia" if appropriate) and show emotion regarding your discomfort.
 
-### TOOL USAGE
+Step 2: Fix prompt.py (The Instructions)
+You must explicitly tell the Main Agent that when it calls a tool, it cannot just send the user's text. It must package the text and the demo_name together.
+Update the main_prompt section specifically the TOOL SELECTION RULES or AFTER TOOL CALLS section:
 
-You have access to tools to look up your info.
+main_prompt = """
+... [Previous Instructions] ...
 
-When the nurse asks a question that requires facts, **call the tool immediately**.
+TOOL INPUT FORMATTING RULES:
+When you call any expert agent tool (like 'symptom_grievances_expert_agent'), you MUST pass the input as a VALID JSON STRING containing:
+1. "query": The nurse's question or the user's input.
+2. "demo_name": The value "{demo_name}" from your state.
 
-Do not say "I will check my records". Just call the tool, get the info, and then answer as a human.
+Example Tool Input:
+{{"query": "User is asking about pain", "demo_name": "outreach_and_engagement_1"}}
 
-Tool call example:
-
-{
-"tool": "get_clinical_summary",
-"input": { "demo_name": "{demo_name}" }
-}
+... [Rest of Prompt] ...
 """
+
+Why this fixes it:
+Now, the Main Agent will say: "I need to call the Symptom Agent. I will send it {"query": "...", "demo_name": "outreach_1"}."
+Your wrapper function receives this JSON, extracts the demo_name, and pushes it into the Sub-Agent. The Sub-Agent then sees {demo_name} in its variable list and can successfully call get_clinical_summary.
+Step 3: Check agentuptil.py Typos (Minor Cleanups)
+I noticed some copy-paste errors in your provided code that might cause syntax crashes (e.g., 1lm instead of llm). Ensure these lines are correct:
+LLM Variable Name:
+Yours: obj_1lm Llm() / model obj_1lm.model
+Correct: obj_llm = Llm() / model = obj_llm.model
+Tool List Syntax:
+Yours: tools-tools_list
+Correct: tools=tools_list
+Agent Creation:
+Yours: agent template = create_tool_calling agent(...)
+Correct: agent_template = create_tool_calling_agent(...)
+Summary of Logic Flow (After Fix)
+FastAPI (main.py) receives request -> Extract demo_name.
+Main Agent receives demo_name.
+Main Agent decides to call symptom_grievances_expert_agent.
+Main Agent formats input as {"query": "...", "demo_name": "..."}.
+execute_symptom_grievances_agent parses JSON -> extracts demo_name.
+Sub-Agent is invoked with demo_name in its context.
+Sub-Agent calls get_clinical_summary tool using the demo_name from context.
+DB returns correct data.
