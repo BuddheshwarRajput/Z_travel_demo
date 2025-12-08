@@ -1,191 +1,68 @@
-This log is extremely helpful. It confirms two major issues causing your chaos:
-The Crash (NoneType error): Your code is trying to read a Process Map for outreach_and_engagement_1, but the database is returning None (empty). The code then crashes because it tries to read the "empty" result.
-The Hallucination: Because the tools fail (due to the crash or missing data), the Agent has zero context. It doesn't know its birthday, so it makes one up ("March 15", then "Feb 16"). It doesn't even know who it is, which is why it suddenly says "I'm the nurse you'll be speaking with" (Persona Inversion).
-Here is the fix for the critical crash and the database issue.
-1. Fix the Crash in exec_queries.py
-Your function get_process_map_by_demo_name crashes when the database returns nothing. You need to handle the None case safely.
-Replace your get_process_map_by_demo_name function with this:
-def get_process_map_by_demo_name(demo_name: str):
-    """
-    Retrieve the process map associated with a given demo name from the database.
-    """
-    try:
-        print(f"\n\nExecuting get_process_map_by_demo_name for: {demo_name}\n\n")
-        
-        map_id_dict = get_map_id_by_demo_name(demo_name)
-        
-        # SAFETY CHECK: If map_id_dict is None, we cannot check 'in' operator on it
-        if not map_id_dict:
-            print(f"CRITICAL WARNING: No Process Map found in DB for demo_name: '{demo_name}'")
-            # Return an empty structure so the agent doesn't crash, just acts dumb
-            return {"process_flow_map": {}, "stages": []}
-
-        if 'map_id' in map_id_dict:
-            return get_process_map_by_map_id(map_id_dict['map_id'])
-            
-        return {"message": "Invalid demo_name or Map ID not found"}
-
-    except Exception as e:
-        print(f"\n\nError getting process map: \n{str(e)}\n\n")
-        return {"error": str(e)}
-
-2. Verify Your Database Data (The Root Cause)
-The logs explicitly say:
-Query executed. Fetched one row: None
-This means outreach_and_engagement_1 is NOT in your database.
-Did you run the insertion script? You have insert_process_map functions in exec_queries.py, but are they being called?
-Check the naming: Is the folder/filename exactly outreach_and_engagement_1.json in your process_maps folder?
-Fix: You likely need to run a setup script (like python exec_queries.py) to actually insert the JSON files into your local DB before starting the server.
-3. Fix the "Persona Flip" (I am the Nurse)
-In your conversation log, your bot said: "I'm the nurse you'll be speaking with."
-This happens because the prompt is confusing the LLM. It sees "Nurse" in the system prompt and forgets it is playing the Customer.
-Update prompt.py -> main_prompt:
-Change the definition slightly to be more forceful about negative constraints:
-
 main_prompt = """
-You are playing the role of a CUSTOMER named {customer_details}.
-You are interacting with a Nurse Agent.
+You are playing the role of a CUSTOMER/PATIENT interacting with a Nurse Agent.
 
-CRITICAL ROLE-PLAY RULES:
-1. YOU ARE THE PATIENT/CUSTOMER. You are NOT the nurse.
-2. NEVER introduce yourself as the nurse.
-3. NEVER ask "How can I help you?". You are the one receiving the call.
-4. If the nurse asks for verification, answer naturally.
-...
+Your attributes:
+- Demo Name: {demo_name}
+- Domain: {domain}
+- Persona: {persona}
+- Customer Details: {customer_details}
+
+*** CRITICAL RULES - READ CAREFULLY ***
+
+1. **YOU DO NOT KNOW YOUR OWN MEDICAL DATA:** - You CANNOT verify your Name, DOB, Address, or Medical History without checking with the specific Sub-Agent.
+   - If the nurse asks for your Date of Birth (DOB), you MUST delegate to 'call_initiation_expert_agent'. DO NOT GUESS A DATE.
+
+2. **IGNORE EMPTY INPUTS:**
+   - If the user sends an empty message or silence, respond naturally as a patient waiting (e.g., "Hello?", "Are you there?", "I'm listening"). 
+   - DO NOT start talking as the Nurse.
+
+3. **YOU ARE THE PATIENT:**
+   - NEVER say "How can I help you?". That is what the Nurse says.
+   - You are the one receiving care.
+
+*** TOOL SELECTION STRATEGY ***
+- Nurse asks for DOB/Verification -> Delegate to 'call_initiation_expert_agent'
+- Nurse asks about Symptoms -> Delegate to 'symptom_grievances_expert_agent'
+- Nurse asks about Meds -> Delegate to 'medication_and_pain_management_expert_agent'
+
+Current Context:
+{chat_history}
 """
 
 
-4. Fix the "Date of Birth" Hallucination
-The bot gave two different birthdays because it couldn't reach the database (due to the issues above) to get the real fake birthday.
-Once you fix Step 1 (Crash) and Step 2 (Data Insertion), the Agent will be able to read the real DOB from the clinical_summary and stop guessing.
-Summary Checklist for you:
-Stop the server.
-Run your database insertion script to ensure outreach_and_engagement_1 actually exists in your tables.
-Apply the code fix to exec_queries.py (above) to prevent the "NoneType" crash.
-Apply the code fix to agentuptil.py (from my previous answer) to ensure demo_name is passed to the tools.
-Restart the server.
-
-
-
-
-
-
-
-
-
-Based on the code provided, I have identified the core problem. It is a State Propagation Issue (specifically regarding demo_name).
-​The Diagnosis
-​Your system is a Hierarchical Agent System (Orchestrator -> Sub-Agents).
-​Main Agent (Orchestrator): Knows the demo_name, persona, etc., because you pass it in main.py.
-​Sub-Agents (e.g., Symptom Agent): These are initialized separately. When the Main Agent calls them, it typically only passes the User Query.
-​The Break: The Sub-Agents (and their tools like get_clinical_summary) rely on demo_name to query the database. However, the Main Agent is not passing the demo_name into the Sub-Agent's execution context. Therefore, the database tool receives null or fails to find the record, returning empty results.
-​Here is the step-by-step solution to fix this by updating agentuptil.py and prompt.py.
-​Step 1: Fix agentuptil.py (The Bridge)
-​You need to update your execute_... functions. Currently, they treat the input as a simple string (just the user message). They need to handle a JSON string that contains both the query AND the demo_name, and then pass that demo_name into the Sub-Agent's invoke method.
-​Replace your execute_ functions with this logic:
-import json
-
-# Helper to safely parse input
-def parse_agent_input(input_str: str):
-    try:
-        # Try to parse if the Main Agent sends JSON
-        data = json.loads(input_str)
-        return data.get("query", input_str), data.get("demo_name", "")
-    except:
-        # Fallback if it sends just a string
-        return input_str, ""
-
-def execute_call_initiation_agent(input_str: str) -> str:
-    query, demo_name = parse_agent_input(input_str)
-    # Pass demo_name into the sub-agent's state
-    result = call_initiation_agent_executor.invoke({
-        "input": query, 
-        "demo_name": demo_name,
-        "get_clinical_summary": "", # Initialize empty tool scratchpads if needed
-        "get_process_map": ""
-    })
-    return result["output"]
-
-def execute_symptom_grievances_agent(input_str: str) -> str:
-    query, demo_name = parse_agent_input(input_str)
-    result = symptom_grievances_agent_executor.invoke({
-        "input": query, 
-        "demo_name": demo_name 
-    })
-    return result["output"]
-
-def execute_medication_and_pain_management_agent(input_str: str) -> str:
-    query, demo_name = parse_agent_input(input_str)
-    result = medication_and_pain_management_agent_executor.invoke({
-        "input": query, 
-        "demo_name": demo_name
-    })
-    return result["output"]
-
-def execute_services_and_assistance_agent(input_str: str) -> str:
-    query, demo_name = parse_agent_input(input_str)
-    result = services_and_assistance_agent_executor.invoke({
-        "input": query, 
-        "demo_name": demo_name
-    })
-    return result["output"]
-
-def execute_call_closure_agent(input_str: str) -> str:
-    query, demo_name = parse_agent_input(input_str)
-    result = call_closure_agent_executor.invoke({
-        "input": query, 
-        "demo_name": demo_name
-    })
-    return result["output"]
-
-Also, update your Tool definitions in agentuptil.py to reflect that the input requires a JSON structure (Query + Context):
-
-symptom_grievances_agent_tool = Tool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="Delegate here when the nurse asks about symptoms. INPUT FORMAT: A JSON string with keys 'query' (the nurse's question) and 'demo_name'."
+# UPDATE THIS TOOL DEFINITION
+call_initiation_agent_tool = Tool.from_function(
+    func=execute_call_initiation_agent,
+    name="call_initiation_expert_agent",
+    description=(
+        "MANDATORY: Use this tool immediately when the nurse asks for VERIFICATION, DATE OF BIRTH (DOB), NAME confirmation, or introduces themselves. "
+        "Also use this for the start of the call."
+    ),
 )
-# Repeat this description update for all other agent tools.
 
 
-Step 2: Fix prompt.py (The Instructions)
-You must explicitly tell the Main Agent that when it calls a tool, it cannot just send the user's text. It must package the text and the demo_name together.
-Update the main_prompt section specifically the TOOL SELECTION RULES or AFTER TOOL CALLS section:
 
-main_prompt = """
-... [Previous Instructions] ...
+# Inside main.py, look for the 'chat' function
 
-TOOL INPUT FORMATTING RULES:
-When you call any expert agent tool (like 'symptom_grievances_expert_agent'), you MUST pass the input as a VALID JSON STRING containing:
-1. "query": The nurse's question or the user's input.
-2. "demo_name": The value "{demo_name}" from your state.
+@app.post("/aa-api/v1/utility/get_query")
+async def chat(query: UserQuery):
+    try:
+        # ... [Existing session setup code] ...
 
-Example Tool Input:
-{{"query": "User is asking about pain", "demo_name": "outreach_and_engagement_1"}}
+        # --- INSERT THIS BLOCK ---
+        user_text = query.user_input.strip()
+        
+        # If user sends empty input (silence), treat it as silence context
+        if not user_text:
+            print("Detected Empty Input (Silence)")
+            user_text = "[User is silent/listening]" 
+        # -------------------------
 
-... [Rest of Prompt] ...
-"""
-
-Why this fixes it:
-Now, the Main Agent will say: "I need to call the Symptom Agent. I will send it {"query": "...", "demo_name": "outreach_1"}."
-Your wrapper function receives this JSON, extracts the demo_name, and pushes it into the Sub-Agent. The Sub-Agent then sees {demo_name} in its variable list and can successfully call get_clinical_summary.
-Step 3: Check agentuptil.py Typos (Minor Cleanups)
-I noticed some copy-paste errors in your provided code that might cause syntax crashes (e.g., 1lm instead of llm). Ensure these lines are correct:
-LLM Variable Name:
-Yours: obj_1lm Llm() / model obj_1lm.model
-Correct: obj_llm = Llm() / model = obj_llm.model
-Tool List Syntax:
-Yours: tools-tools_list
-Correct: tools=tools_list
-Agent Creation:
-Yours: agent template = create_tool_calling agent(...)
-Correct: agent_template = create_tool_calling_agent(...)
-Summary of Logic Flow (After Fix)
-FastAPI (main.py) receives request -> Extract demo_name.
-Main Agent receives demo_name.
-Main Agent decides to call symptom_grievances_expert_agent.
-Main Agent formats input as {"query": "...", "demo_name": "..."}.
-execute_symptom_grievances_agent parses JSON -> extracts demo_name.
-Sub-Agent is invoked with demo_name in its context.
-Sub-Agent calls get_clinical_summary tool using the demo_name from context.
-DB returns correct data.
+        agent_inputs = {
+            "input": user_text,  # Use the sanitized text
+            "chat_history": chat_history,
+            "demo_name": query.demo_name,
+            # ... other inputs
+        }
+        
+        # ... [Rest of code] ...
