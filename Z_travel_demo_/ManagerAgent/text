@@ -1,3 +1,41 @@
+curl -X POST "http://localhost:6200/aa-api/v1/utility/get_query" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "user_input": "Hello, my name is Beth. I is a registered nurse. Is this John Example?",
+           "demo_name": "outreach_engagement_1",
+           "domain": "healthcare",
+           "persona": "neutral",
+           "customer_details": {
+               "name": "John Example",
+               "dob": "1980-08-15",
+               "member_id": "123456789",
+               "address": "123 Main St"
+           }
+         }'
+
+
+
+ Mid-Call Response (Testing Persistence)
+
+curl -X POST "http://localhost:6200/aa-api/v1/utility/get_query" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "session_id": "YOUR_SESSION_ID_HERE",
+           "user_input": "Could you verify your date of birth for me please?",
+           "demo_name": "outreach_engagement_1",
+           "domain": "healthcare",
+           "persona": "neutral",
+           "customer_details": {
+               "name": "John Example",
+               "dob": "1980-08-15"
+           }
+         }'
+
+
+
+
+
+
 from functools import partial
 from typing import Dict, Any, Union
 from langchain.tools import Tool, StructuredTool
