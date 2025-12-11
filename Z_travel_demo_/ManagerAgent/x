@@ -1,1139 +1,256 @@
-from functools import partial
-from typing import Dict, Any
-from langchain.tools import Tool, StructuredTool
-from pydantic import BaseModel, Field
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from components.prompts import *
-from components.llm import Llm
-from components.tools import get_clinical_summary, get_process_map, get_intent_map
+import os
+import json
+import boto3
+import matplotlib
+# CRITICAL: Switch backend to 'Agg' before importing pyplot.
+# This prevents "TclError: no display name" crashes on headless servers (EKS/EC2).
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from datetime import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from botocore.exceptions import ClientError
+from config import configuration
 
-# LLM Initialization
-obj_llm = Llm()
-model = obj_llm.model
+# ======================================================
+# 1. Helper: Generate Chart (Thread-Safe)
+# ======================================================
+def generate_horizontal_bar_chart(categories_score, chart_path):
+    """
+    Generates a horizontal bar chart and saves it to the specified path.
+    Uses a new figure instance to avoid thread contention.
+    """
+    categories = list(categories_score.keys())
+    # Clean percentages (remove %) and convert to float
+    scores = [float(v.replace('%', '')) for v in categories_score.values()]
 
-# --- 1. STRICT INPUT SCHEMA (MANDATORY FIELDS) ---
-class AgentInput(BaseModel):
-    query: str = Field(description="The user's query.")
-    demo_name: str = Field(description="The configuration ID (e.g., 'outreach_engagement_1').")
-    customer_details: str = Field(
-        description="CRITICAL: The FULL customer_details dictionary string from your state. You MUST pass this."
-    )
+    colors_list = [
+        (0.2, 0.4, 1.0, 0.85) if s >= 80 else (1.0, 0.3, 0.3, 0.8)
+        for s in scores
+    ]
 
-# --- 2. PROMPT BUILDING ---
-def build_agent_executors(llm_model, prompt_val, tools_list):
-    # We use SystemMessagePromptTemplate to strictly support {demo_name} and {customer_details}
-    prompt_template = ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(prompt_val), 
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
+    # Create a specific figure object instead of using global plt instance
+    fig, ax = plt.subplots(figsize=(10, 6))
     
-    agent_template = create_tool_calling_agent(llm=llm_model, tools=tools_list, prompt=prompt_template)
+    bars = ax.barh(categories, scores, color=colors_list, edgecolor='black')
     
-    return AgentExecutor(
-        agent=agent_template, 
-        tools=tools_list, 
-        verbose=True, 
-        handle_parsing_errors=True
-    )
-
-# --- 3. EXECUTION FUNCTIONS ---
-
-def execute_call_initiation_agent(query: str, demo_name: str, customer_details: str) -> str:
-    print(f"DEBUG: Passing payload details to Call Initiation: {str(customer_details)[:50]}...")
-
-    # Wrapper Tools (Zero Input) - Locked to demo_name
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-    def safe_get_process(x=None): return get_process_map.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns DB verification info. No input required."
-    )
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns call script. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, call_initiation_prompt, [safe_summary_tool, safe_process_tool])
+    for i, bar in enumerate(bars):
+        ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height()/2, 
+                f"{scores[i]}%", va='center', fontsize=10, color='black')
     
-    # THE FIX: Passing ALL required variables to avoid KeyError
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details, # <-- Passed from Payload
-        "demo_name": demo_name                # <-- Passed from Payload
-    })["output"]
-
-def execute_symptom_grievances_agent(query: str, demo_name: str, customer_details: str) -> str:
-    print(f"DEBUG: Passing payload details to Symptom Agent: {str(customer_details)[:50]}...")
-
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns clinical history. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, symptom_clarification_customer_grievances_prompt, [safe_summary_tool])
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Score (%)", fontsize=12)
+    ax.set_title("Call Evaluation Analysis", fontsize=14, color='navy', pad=15)
+    ax.invert_yaxis()
+    ax.grid(axis="x", linestyle="--", alpha=0.4)
     
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
+    plt.tight_layout()
+    fig.savefig(chart_path, dpi=300)
+    plt.close(fig) # Explicitly close to free memory
 
-def execute_medication_and_pain_management_agent(query: str, demo_name: str, customer_details: str) -> str:
-    print(f"DEBUG: Passing payload details to Meds Agent")
-
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns meds/pain info. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, medication_and_pain_management_prompt, [safe_summary_tool])
+# ======================================================
+# 2. Helper: Upload & Sign
+# ======================================================
+def upload_pdf_to_s3(local_file_path, s3_filename):
+    """
+    Uploads PDF to S3 using the IAM Role and generates a Presigned URL.
+    Returns: (success: bool, url_or_error: str)
+    """
+    bucket_name = configuration['S3']['bucket_name']
+    region = configuration['S3']['region']
+    folder_prefix = configuration['S3']['folder_prefix']
     
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
+    # Initialize Client with Region (Required for SigV4 Presigned URLs)
+    # No keys needed - Boto3 automatically picks up the EKS/IAM Role.
+    s3_client = boto3.client('s3', region_name=region)
 
-def execute_services_and_assistance_agent(query: str, demo_name: str, customer_details: str) -> str:
-    print(f"DEBUG: Passing payload details to Services Agent")
+    try:
+        s3_key = f"{folder_prefix}{s3_filename}"
+        
+        # 1. Upload File
+        s3_client.upload_file(
+            local_file_path,
+            bucket_name,
+            s3_key,
+            ExtraArgs={
+                'ContentType': 'application/pdf',
+                # Forces browser to download with specific filename
+                'ContentDisposition': 'attachment' 
+            }
+        )
+        
+        # 2. Generate Presigned URL (Valid for 5 minutes / 300 seconds)
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': s3_key},
+            ExpiresIn=300
+        )
+        
+        print(f"[S3] Upload successful for {s3_filename}")
+        return True, presigned_url
 
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
+    except ClientError as e:
+        error_msg = f"S3 ClientError: {str(e)}"
+        print(f"[S3 ERROR] {error_msg}")
+        return False, error_msg
+    except Exception as e:
+        error_msg = f"S3 Unexpected Error: {str(e)}"
+        print(f"[S3 ERROR] {error_msg}")
+        return False, error_msg
 
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns social services info. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, services_and_assistance_prompt, [safe_summary_tool])
+# ======================================================
+# 3. Main Function: Generate Report
+# ======================================================
+def generate_pdf_report(json_evaluation, sid):
+    """
+    Orchestrates PDF creation, chart generation, and S3 upload.
+    Handles cleanup of temporary files in /tmp.
+    Returns: Presigned URL (str) or None if failed.
+    """
+    # Use /tmp for ephemeral storage (safe for Lambda/Containers)
+    output_folder = "/tmp" 
+    output_filename = f"QA_Insights_Report_{sid}.pdf"
+    chart_filename = f"category_scores_chart_{sid}.png"
     
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
+    output_path = os.path.join(output_folder, output_filename)
+    chart_path = os.path.join(output_folder, chart_filename)
 
-def execute_call_closure_agent(query: str, demo_name: str, customer_details: str) -> str:
-    print(f"DEBUG: Passing payload details to Closure Agent")
+    try:
+        # --- A. Generate Chart ---
+        generate_horizontal_bar_chart(json_evaluation.get("Categories_Score", {}), chart_path)
 
-    def safe_get_process(x=None): return get_process_map.invoke({"demo_name": demo_name})
+        # --- B. Build PDF Document ---
+        doc = SimpleDocTemplate(output_path, pagesize=A4)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Custom Styles
+        styles.add(ParagraphStyle(name='CustomTitle', fontSize=16, leading=20, spaceAfter=12, textColor=colors.darkblue))
+        styles.add(ParagraphStyle(name='SectionHeader', fontSize=13, leading=16, spaceAfter=8, textColor=colors.blue))
+        styles.add(ParagraphStyle(name='Body', fontSize=10, leading=14))
+        cell_style = ParagraphStyle(name='TableCell', fontSize=10, leading=12, spaceAfter=2)
 
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns closure scripts. No input required."
-    )
+        # Content: Title & Time
+        elements.append(Paragraph("<b>Call Simulation Evaluation Report</b>", styles['CustomTitle']))
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph(f"<b>Report Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Body']))
+        elements.append(Spacer(1, 10))
 
-    agent_executor = build_agent_executors(model, call_closure_prompt, [safe_process_tool])
+        # Content: Score
+        overall_score = float(json_evaluation.get("Overall_Score", "0%").replace("%", ""))
+        status = "PASS" if overall_score >= 80 else "FAIL"
+        status_color = "green" if status == "PASS" else "red"
+        
+        elements.append(Paragraph(f"<b>Overall Score:</b> {overall_score}%", styles['Body']))
+        elements.append(Paragraph(f"<b>Status:</b> <font color='{status_color}'><b>{status}</b></font>", styles['Body']))
+        elements.append(Spacer(1, 12))
+
+        # Content: Chart Image
+        if os.path.exists(chart_path):
+            elements.append(Image(chart_path, width=480, height=280))
+            elements.append(Spacer(1, 12))
+
+        # Content: Detailed Table
+        for section, data in json_evaluation.items():
+            if isinstance(data, dict) and "sub_parameters" in data:
+                elements.append(Paragraph(f"<b>{section}</b>", styles['SectionHeader']))
+                table_data = [["Description"]]
+                for sub in data["sub_parameters"]:
+                    table_data.append([Paragraph(sub.get("description", ""), cell_style)])
+
+                table = Table(table_data, colWidths=[460])
+                table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightblue),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.gray),
+                ]))
+                elements.append(table)
+                elements.append(Spacer(1, 12))
+
+        # Content: Recommendations
+        if "Recommendation" in json_evaluation:
+            elements.append(Paragraph("<b>Recommendations</b>", styles['SectionHeader']))
+            for rec in json_evaluation["Recommendation"]:
+                elements.append(Paragraph(f"• {rec}", styles['Body']))
+            elements.append(Spacer(1, 10))
+
+        # Write PDF to /tmp
+        doc.build(elements)
+
+        # --- C. Upload to S3 ---
+        s3_final_name = f"QA_insights_report_{sid}.pdf"
+        success, result = upload_pdf_to_s3(output_path, s3_final_name)
+        
+        if success:
+            return result # This is the Presigned URL
+        else:
+            print(f"Failed to return URL. Error: {result}")
+            return None
+
+    except Exception as e:
+        print(f"CRITICAL ERROR in PDF Generation: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+    finally:
+        # --- D. Cleanup (Always runs) ---
+        # Crucial for servers to avoid 'Disk Full' errors
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        if os.path.exists(chart_path):
+            os.remove(chart_path)
+
+
+
+
+
+
+
+
+
+
+
+
+def upload_pdf_to_s3(local_file_path, s3_filename):
+    """
+    Uploads PDF and returns the DIRECT (Permanent) URL.
+    NOTE: This URL will only work if the bucket is PUBLIC or the user has direct AWS access.
+    """
+    bucket_name = configuration['S3']['bucket_name']
+    region = configuration['S3']['region']
+    folder_prefix = configuration['S3']['folder_prefix']
     
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
-
-# --- 4. MAIN AGENT TOOLS ---
-# customer_details is MANDATORY here.
-
-call_initiation_agent_tool = StructuredTool.from_function(
-    func=execute_call_initiation_agent,
-    name="call_initiation_expert_agent",
-    description="For Verification/DOB/Name. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-symptom_grievances_agent_tool = StructuredTool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="For Symptoms/Pain. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-medication_and_pain_management_agent_tool = StructuredTool.from_function(
-    func=execute_medication_and_pain_management_agent,
-    name="medication_and_pain_management_expert_agent",
-    description="For Meds/Prescriptions. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-services_and_assistance_agent_tool = StructuredTool.from_function(
-    func=execute_services_and_assistance_agent,
-    name="services_and_assistance_expert_agent",
-    description="For Social Services/Transport. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-call_closure_agent_tool = StructuredTool.from_function(
-    func=execute_call_closure_agent,
-    name="call_closure_expert_agent",
-    description="For Call End. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-main_tools = [
-    call_initiation_agent_tool, symptom_grievances_agent_tool, 
-    medication_and_pain_management_agent_tool, services_and_assistance_agent_tool, 
-    call_closure_agent_tool, get_intent_map
-]
-
-main_agent = build_agent_executors(model, main_prompt, main_tools)
-
-
-
-
-
-
-from functools import partial
-from typing import Dict, Any
-from langchain.tools import Tool, StructuredTool
-from pydantic import BaseModel, Field
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from components.prompts import *
-from components.llm import Llm
-from components.tools import get_clinical_summary, get_process_map, get_intent_map
-
-# LLM Init
-obj_llm = Llm()
-model = obj_llm.model
-
-# --- 1. STRICT INPUT SCHEMA ---
-# "customer_details" is now MANDATORY (Field required)
-class AgentInput(BaseModel):
-    query: str = Field(description="The user's query.")
-    demo_name: str = Field(description="The configuration ID (e.g., 'outreach_engagement_1').")
-    customer_details: str = Field(
-        description="The FULL customer_details dictionary from your state. You MUST pass this string."
-    )
-
-# --- 2. PROMPT BUILDING ---
-def build_agent_executors(llm_model, prompt_val, tools_list):
-    prompt_template = ChatPromptTemplate.from_messages([
-        # This allows {demo_name} and {customer_details} to be injected into the prompt text
-        SystemMessagePromptTemplate.from_template(prompt_val), 
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-    
-    agent_template = create_tool_calling_agent(llm=llm_model, tools=tools_list, prompt=prompt_template)
-    
-    return AgentExecutor(
-        agent=agent_template, 
-        tools=tools_list, 
-        verbose=True, 
-        handle_parsing_errors=True
-    )
-
-# --- 3. EXECUTION FUNCTIONS ---
-
-def execute_call_initiation_agent(query: str, demo_name: str, customer_details: str) -> str:
-    # Safe Tools (Zero Input)
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-    def safe_get_process(x=None): return get_process_map.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns DB verification info. No input required."
-    )
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns call script. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, call_initiation_prompt, [safe_summary_tool, safe_process_tool])
-    
-    # FIX: Added "demo_name" to this dictionary to solve KeyError
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name 
-    })["output"]
-
-def execute_symptom_grievances_agent(query: str, demo_name: str, customer_details: str) -> str:
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns clinical history. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, symptom_clarification_customer_grievances_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
-
-def execute_medication_and_pain_management_agent(query: str, demo_name: str, customer_details: str) -> str:
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns meds/pain info. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, medication_and_pain_management_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
-
-def execute_services_and_assistance_agent(query: str, demo_name: str, customer_details: str) -> str:
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns social services info. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, services_and_assistance_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
-
-def execute_call_closure_agent(query: str, demo_name: str, customer_details: str) -> str:
-    def safe_get_process(x=None): return get_process_map.invoke({"demo_name": demo_name})
-
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns closure scripts. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, call_closure_prompt, [safe_process_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": customer_details,
-        "demo_name": demo_name
-    })["output"]
-
-# --- 4. MAIN AGENT TOOLS ---
-
-call_initiation_agent_tool = StructuredTool.from_function(
-    func=execute_call_initiation_agent,
-    name="call_initiation_expert_agent",
-    description="For Verification/DOB/Name. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-symptom_grievances_agent_tool = StructuredTool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="For Symptoms/Pain. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-medication_and_pain_management_agent_tool = StructuredTool.from_function(
-    func=execute_medication_and_pain_management_agent,
-    name="medication_and_pain_management_expert_agent",
-    description="For Meds/Prescriptions. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-services_and_assistance_agent_tool = StructuredTool.from_function(
-    func=execute_services_and_assistance_agent,
-    name="services_and_assistance_expert_agent",
-    description="For Social Services/Transport. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-call_closure_agent_tool = StructuredTool.from_function(
-    func=execute_call_closure_agent,
-    name="call_closure_expert_agent",
-    description="For Call End. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-main_tools = [
-    call_initiation_agent_tool, symptom_grievances_agent_tool, 
-    medication_and_pain_management_agent_tool, services_and_assistance_agent_tool, 
-    call_closure_agent_tool, get_intent_map
-]
-
-main_agent = build_agent_executors(model, main_prompt, main_tools)
-
-
-
-
-
-from functools import partial
-from typing import Dict, Any
-from langchain.tools import Tool, StructuredTool
-from pydantic import BaseModel, Field
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from components.prompts import *
-from components.llm import Llm
-from components.tools import get_clinical_summary, get_process_map, get_intent_map
-
-# LLM Init
-obj_llm = Llm()
-model = obj_llm.model
-
-# --- 1. UPDATE INPUT SCHEMA TO INCLUDE CUSTOMER DETAILS ---
-class AgentInput(BaseModel):
-    query: str = Field(description="The user's query.")
-    demo_name: str = Field(description="The configuration ID (e.g., 'outreach_engagement_1').")
-    customer_details: Dict[str, Any] = Field(
-        description="The FULL customer_details dictionary from your state. Pass this EXACTLY as is."
-    )
-
-# --- 2. FIX PROMPT BUILDING (Allow variables in System Message) ---
-def build_agent_executors(llm_model, prompt_val, tools_list):
-    prompt_template = ChatPromptTemplate.from_messages([
-        # CHANGED: Use SystemMessagePromptTemplate to allow {customer_details} injection
-        SystemMessagePromptTemplate.from_template(prompt_val), 
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-    
-    agent_template = create_tool_calling_agent(llm=llm_model, tools=tools_list, prompt=prompt_template)
-    
-    return AgentExecutor(
-        agent=agent_template, 
-        tools=tools_list, 
-        verbose=True, 
-        handle_parsing_errors=True
-    )
-
-# --- 3. UPDATE EXECUTION FUNCTIONS ---
-# Now accepting 'customer_details' and passing it to .invoke()
-
-def execute_call_initiation_agent(query: str, demo_name: str, customer_details: Dict) -> str:
-    print(f"DEBUG: Starting Call Initiation for {demo_name}")
-    
-    def safe_get_summary(x=None):
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    def safe_get_process(x=None):
-        return get_process_map.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns DB verification info. No input required."
-    )
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns call script. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, call_initiation_prompt, [safe_summary_tool, safe_process_tool])
-    
-    # PASS customer_details TO THE PROMPT HERE
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": str(customer_details) # Stringify to ensure prompt renders it
-    })["output"]
-
-def execute_symptom_grievances_agent(query: str, demo_name: str, customer_details: Dict) -> str:
-    def safe_get_summary(x=None):
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns clinical history. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, symptom_clarification_customer_grievances_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": str(customer_details)
-    })["output"]
-
-def execute_medication_and_pain_management_agent(query: str, demo_name: str, customer_details: Dict) -> str:
-    def safe_get_summary(x=None):
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns meds/pain info. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, medication_and_pain_management_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": str(customer_details)
-    })["output"]
-
-def execute_services_and_assistance_agent(query: str, demo_name: str, customer_details: Dict) -> str:
-    def safe_get_summary(x=None):
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns social services info. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, services_and_assistance_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": str(customer_details)
-    })["output"]
-
-def execute_call_closure_agent(query: str, demo_name: str, customer_details: Dict) -> str:
-    def safe_get_process(x=None):
-        return get_process_map.invoke({"demo_name": demo_name})
-
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns closure scripts. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, call_closure_prompt, [safe_process_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": str(customer_details)
-    })["output"]
-
-# --- 4. MAIN AGENT TOOLS (Updated Description) ---
-
-call_initiation_agent_tool = StructuredTool.from_function(
-    func=execute_call_initiation_agent,
-    name="call_initiation_expert_agent",
-    description="For Verification/DOB/Name. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-symptom_grievances_agent_tool = StructuredTool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="For Symptoms/Pain. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-medication_and_pain_management_agent_tool = StructuredTool.from_function(
-    func=execute_medication_and_pain_management_agent,
-    name="medication_and_pain_management_expert_agent",
-    description="For Meds/Prescriptions. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-services_and_assistance_agent_tool = StructuredTool.from_function(
-    func=execute_services_and_assistance_agent,
-    name="services_and_assistance_expert_agent",
-    description="For Social Services/Transport. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-call_closure_agent_tool = StructuredTool.from_function(
-    func=execute_call_closure_agent,
-    name="call_closure_expert_agent",
-    description="For Call End. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-main_tools = [
-    call_initiation_agent_tool, symptom_grievances_agent_tool, 
-    medication_and_pain_management_agent_tool, services_and_assistance_agent_tool, 
-    call_closure_agent_tool, get_intent_map
-]
-
-main_agent = build_agent_executors(model, main_prompt, main_tools)
-
-
-
-
-
-from functools import partial
-from langchain.tools import Tool, StructuredTool
-from pydantic import BaseModel, Field
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import SystemMessage
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from components.prompts import *
-from components.llm import Llm
-
-# IMPORT YOUR TOOLS (These are Tool Objects, not functions)
-from components.tools import get_clinical_summary, get_process_map, get_intent_map
-
-# LLM Initialization
-obj_llm = Llm()
-model = obj_llm.model
-
-# --- 1. DEFINING INPUT SCHEMAS ---
-class AgentInput(BaseModel):
-    query: str = Field(description="The user's query or the question being asked.")
-    demo_name: str = Field(description="The database configuration ID (e.g., 'outreach_engagement_1').")
-
-# --- 2. HELPER TO BUILD AGENTS ---
-def build_agent_executors(llm_model, prompt_val, tools_list):
-    prompt_template = ChatPromptTemplate.from_messages([
-        SystemMessage(content=prompt_val),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-    
-    agent_template = create_tool_calling_agent(llm=llm_model, tools=tools_list, prompt=prompt_template)
-    
-    return AgentExecutor(
-        agent=agent_template, 
-        tools=tools_list, 
-        verbose=True, 
-        handle_parsing_errors=True
-    )
-
-# --- 3. WRAPPER FUNCTIONS (THE FIX) ---
-# We use .invoke() to safely call the tool with the locked-in demo_name
-
-def execute_call_initiation_agent(query: str, demo_name: str) -> str:
-    print(f"DEBUG: Binding demo_name='{demo_name}' to Call Initiation Tools")
-    
-    # Wrapper function handling the Tool Object invocation
-    def safe_get_summary(x=None):
-        # .invoke() is required because get_clinical_summary is a Tool Object
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    def safe_get_process(x=None):
-        return get_process_map.invoke({"demo_name": demo_name})
-
-    # Create Zero-Argument Tools for the Sub-Agent
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns the patient's DOB and Verification info. No input required."
-    )
-
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process,
-        name="get_process_map",
-        description="Returns the call script. No input required."
-    )
-    
-    # Build temporary agent for this turn
-    agent_executor = build_agent_executors(
-        model, 
-        call_initiation_prompt, 
-        [safe_summary_tool, safe_process_tool] 
-    )
-
-    return agent_executor.invoke({"input": query, "chat_history": []})["output"]
-
-def execute_symptom_grievances_agent(query: str, demo_name: str) -> str:
-    print(f"DEBUG: Binding demo_name='{demo_name}' to Symptom Tools")
-    
-    def safe_get_summary(x=None):
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns patient symptoms and medical history. No input required."
-    )
-
-    agent_executor = build_agent_executors(
-        model, 
-        symptom_clarification_customer_grievances_prompt, 
-        [safe_summary_tool] 
-    )
-
-    return agent_executor.invoke({"input": query, "chat_history": []})["output"]
-
-def execute_medication_and_pain_management_agent(query: str, demo_name: str) -> str:
-    def safe_get_summary(x=None):
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns medication list and pain levels. No input required."
-    )
-    
-    agent_executor = build_agent_executors(
-        model, 
-        medication_and_pain_management_prompt, 
-        [safe_summary_tool]
-    )
-    
-    return agent_executor.invoke({"input": query, "chat_history": []})["output"]
-
-def execute_services_and_assistance_agent(query: str, demo_name: str) -> str:
-    def safe_get_summary(x=None):
-        return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns social services needs. No input required."
-    )
-
-    agent_executor = build_agent_executors(
-        model, 
-        services_and_assistance_prompt, 
-        [safe_summary_tool]
-    )
-    
-    return agent_executor.invoke({"input": query, "chat_history": []})["output"]
-
-def execute_call_closure_agent(query: str, demo_name: str) -> str:
-    def safe_get_process(x=None):
-        return get_process_map.invoke({"demo_name": demo_name})
-
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process,
-        name="get_process_map",
-        description="Returns closure scripts. No input required."
-    )
-    
-    agent_executor = build_agent_executors(
-        model, 
-        call_closure_prompt, 
-        [safe_process_tool]
-    )
-    
-    return agent_executor.invoke({"input": query, "chat_history": []})["output"]
-
-# --- 4. MAIN AGENT TOOLS ---
-# These tools use the StructuredTool schema because the Main Agent sends the demo_name
-
-call_initiation_agent_tool = StructuredTool.from_function(
-    func=execute_call_initiation_agent,
-    name="call_initiation_expert_agent",
-    description="For Verification/DOB/Greetings. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-symptom_grievances_agent_tool = StructuredTool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="For Symptoms/Pain. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-medication_and_pain_management_agent_tool = StructuredTool.from_function(
-    func=execute_medication_and_pain_management_agent,
-    name="medication_and_pain_management_expert_agent",
-    description="For Meds/Prescriptions. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-services_and_assistance_agent_tool = StructuredTool.from_function(
-    func=execute_services_and_assistance_agent,
-    name="services_and_assistance_expert_agent",
-    description="For Social Services/Transport. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-call_closure_agent_tool = StructuredTool.from_function(
-    func=execute_call_closure_agent,
-    name="call_closure_expert_agent",
-    description="For closing the call. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-main_tools = [
-    call_initiation_agent_tool, 
-    symptom_grievances_agent_tool, 
-    medication_and_pain_management_agent_tool, 
-    services_and_assistance_agent_tool, 
-    call_closure_agent_tool, 
-    get_intent_map
-]
-
-# Initialize Main Agent
-main_agent = build_agent_executors(model, main_prompt, main_tools)
-
-
-
-
-
-
-from functools import partial
-from langchain.tools import Tool, StructuredTool
-from pydantic import BaseModel, Field
-
-# ... (Keep your imports and LLM init) ...
-
-# 1. INPUT SCHEMA (Keep this strictly defined)
-class AgentInput(BaseModel):
-    query: str = Field(description="The user's question.")
-    demo_name: str = Field(description="The database configuration ID (e.g., 'outreach_engagement_1').")
-
-# 2. UPDATED EXECUTION FUNCTIONS (THE FIX)
-def execute_call_initiation_agent(query: str, demo_name: str) -> str:
-    print(f"DEBUG: Binding demo_name='{demo_name}' to Call Initiation Tools")
-    
-    # --- MAGIC FIX: CREATE SPECIALIZED TOOLS FOR THIS SPECIFIC CALL ---
-    # We create a new version of the tool that ALREADY has the demo_name filled in.
-    # The agent sees a tool that needs NO demo_name argument.
-    
-    safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name), # Force use of parent demo_name
-        name="get_clinical_summary",
-        description="Returns the patient's DOB, Name, and Verification info. No input required."
-    )
-
-    safe_process_tool = Tool.from_function(
-        func=lambda x: get_process_map(demo_name=demo_name),
-        name="get_process_map",
-        description="Returns the call script. No input required."
-    )
-    
-    # Re-build the agent for this specific turn with the "Safe" tools
-    # Note: We build a temporary agent here to ensure the tools are bound correctly
-    agent_executor = build_agent_executors(
-        model, 
-        call_initiation_prompt, 
-        [safe_summary_tool, safe_process_tool] 
-    )
-
-    result = agent_executor.invoke({
-        "input": query, 
-        "chat_history": [] 
-    })
-    return result["output"]
-
-def execute_symptom_grievances_agent(query: str, demo_name: str) -> str:
-    print(f"DEBUG: Binding demo_name='{demo_name}' to Symptom Tools")
-    
-    safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name),
-        name="get_clinical_summary",
-        description="Returns patient symptoms and medical history. No input required."
-    )
-
-    agent_executor = build_agent_executors(
-        model, 
-        symptom_clarification_customer_grievances_prompt, 
-        [safe_summary_tool] 
-    )
-
-    result = agent_executor.invoke({
-        "input": query, 
-        "chat_history": [] 
-    })
-    return result["output"]
-
-def execute_medication_and_pain_management_agent(query: str, demo_name: str) -> str:
-    safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name),
-        name="get_clinical_summary",
-        description="Returns medication list and pain levels. No input required."
-    )
-    
-    agent_executor = build_agent_executors(
-        model, 
-        medication_and_pain_management_prompt, 
-        [safe_summary_tool]
-    )
-    
-    result = agent_executor.invoke({"input": query, "chat_history": []})
-    return result["output"]
-
-def execute_services_and_assistance_agent(query: str, demo_name: str) -> str:
-    safe_summary_tool = Tool.from_function(
-        func=lambda x: get_clinical_summary(demo_name=demo_name),
-        name="get_clinical_summary",
-        description="Returns social services needs. No input required."
-    )
-
-    agent_executor = build_agent_executors(
-        model, 
-        services_and_assistance_prompt, 
-        [safe_summary_tool]
-    )
-    
-    result = agent_executor.invoke({"input": query, "chat_history": []})
-    return result["output"]
-
-def execute_call_closure_agent(query: str, demo_name: str) -> str:
-    safe_process_tool = Tool.from_function(
-        func=lambda x: get_process_map(demo_name=demo_name),
-        name="get_process_map",
-        description="Returns closure scripts. No input required."
-    )
-    
-    agent_executor = build_agent_executors(
-        model, 
-        call_closure_prompt, 
-        [safe_process_tool]
-    )
-    
-    result = agent_executor.invoke({"input": query, "chat_history": []})
-    return result["output"]
-
-
-# 3. TOOL DEFINITIONS (Main Agent sees these)
-# These remain the same because the Main Agent DOES need to provide the demo_name.
-call_initiation_agent_tool = StructuredTool.from_function(
-    func=execute_call_initiation_agent,
-    name="call_initiation_expert_agent",
-    description="For Verification/DOB/Name. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-symptom_grievances_agent_tool = StructuredTool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="For Symptoms/Pain. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-medication_and_pain_management_agent_tool = StructuredTool.from_function(
-    func=execute_medication_and_pain_management_agent,
-    name="medication_and_pain_management_expert_agent",
-    description="For Meds/Prescriptions. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-services_and_assistance_agent_tool = StructuredTool.from_function(
-    func=execute_services_and_assistance_agent,
-    name="services_and_assistance_expert_agent",
-    description="For Social Services/Transport. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-call_closure_agent_tool = StructuredTool.from_function(
-    func=execute_call_closure_agent,
-    name="call_closure_expert_agent",
-    description="For closing the call. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-# ... (Main Agent Build Logic) ...
-main_tools = [
-    call_initiation_agent_tool, 
-    symptom_grievances_agent_tool, 
-    medication_and_pain_management_agent_tool, 
-    services_and_assistance_agent_tool, 
-    call_closure_agent_tool, 
-    get_intent_map
-]
-
-# Note: We do NOT initialize the sub-agent executors globally anymore 
-# because we build them dynamically inside the execute functions.
-# Remove lines like: "call_initiation_agent_executor = build_agent_..." 
-# The global "main_agent" remains.
-
-main_agent = build_agent_executors(model, main_prompt, main_tools)
-
-
-
-
-from langchain.tools import Tool, StructuredTool
-from pydantic import BaseModel, Field
-
-# Import your actual tools
-from components.tools import get_clinical_summary, get_process_map, get_intent_map
-
-# ... (Keep your LLM init and imports) ...
-
-# 1. DEFINE MAIN AGENT INPUT SCHEMA
-class AgentInput(BaseModel):
-    query: str = Field(description="The user's question.")
-    demo_name: str = Field(description="The database configuration ID (e.g., 'outreach_engagement_1').")
-
-# 2. THE FIX: WRAPPER FUNCTIONS THAT HIDE DEMO_NAME
-def execute_call_initiation_agent(query: str, demo_name: str) -> str:
-    print(f"DEBUG: Binding demo_name='{demo_name}' to Call Initiation Tools")
-    
-    # --- STEP A: Create a 'Wrapper' Function ---
-    # This function takes NO arguments. It uses the 'demo_name' variable 
-    # from the parent function scope (Closure).
-    def safe_get_summary():
-        return get_clinical_summary(demo_name=demo_name)
-
-    def safe_get_process():
-        return get_process_map(demo_name=demo_name)
-
-    # --- STEP B: Create 'Zero-Input' Tools ---
-    # We tell the Agent: "These tools require NO input."
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns the patient's DOB and Verification info. No input required."
-    )
-
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process,
-        name="get_process_map",
-        description="Returns the call script. No input required."
-    )
-    
-    # --- STEP C: Build the Agent with these Safe Tools ---
-    agent_executor = build_agent_executors(
-        model, 
-        call_initiation_prompt, 
-        [safe_summary_tool, safe_process_tool] 
-    )
-
-    # --- STEP D: Run (Pass empty chat_history to satisfy prompt) ---
-    result = agent_executor.invoke({
-        "input": query, 
-        "chat_history": [] 
-    })
-    return result["output"]
-
-def execute_symptom_grievances_agent(query: str, demo_name: str) -> str:
-    print(f"DEBUG: Binding demo_name='{demo_name}' to Symptom Tools")
-    
-    # Wrapper with hardcoded demo_name
-    def safe_get_summary():
-        return get_clinical_summary(demo_name=demo_name)
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns patient symptoms and medical history. No input required."
-    )
-
-    agent_executor = build_agent_executors(
-        model, 
-        symptom_clarification_customer_grievances_prompt, 
-        [safe_summary_tool] 
-    )
-
-    result = agent_executor.invoke({"input": query, "chat_history": []})
-    return result["output"]
-
-def execute_medication_and_pain_management_agent(query: str, demo_name: str) -> str:
-    def safe_get_summary():
-        return get_clinical_summary(demo_name=demo_name)
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns medication list and pain levels. No input required."
-    )
-    
-    agent_executor = build_agent_executors(
-        model, 
-        medication_and_pain_management_prompt, 
-        [safe_summary_tool]
-    )
-    
-    result = agent_executor.invoke({"input": query, "chat_history": []})
-    return result["output"]
-
-def execute_services_and_assistance_agent(query: str, demo_name: str) -> str:
-    def safe_get_summary():
-        return get_clinical_summary(demo_name=demo_name)
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary,
-        name="get_clinical_summary",
-        description="Returns social services needs. No input required."
-    )
-
-    agent_executor = build_agent_executors(
-        model, 
-        services_and_assistance_prompt, 
-        [safe_summary_tool]
-    )
-    
-    result = agent_executor.invoke({"input": query, "chat_history": []})
-    return result["output"]
-
-def execute_call_closure_agent(query: str, demo_name: str) -> str:
-    def safe_get_process():
-        return get_process_map(demo_name=demo_name)
-
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process,
-        name="get_process_map",
-        description="Returns closure scripts. No input required."
-    )
-    
-    agent_executor = build_agent_executors(
-        model, 
-        call_closure_prompt, 
-        [safe_process_tool]
-    )
-    
-    result = agent_executor.invoke({"input": query, "chat_history": []})
-    return result["output"]
-
-# 3. DEFINE TOOLS FOR THE MAIN AGENT (Orchestrator)
-# The Main Agent DOES need to pass the demo_name, so we use the StructuredTool schema.
-
-call_initiation_agent_tool = StructuredTool.from_function(
-    func=execute_call_initiation_agent,
-    name="call_initiation_expert_agent",
-    description="For Verification/DOB/Greetings. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-symptom_grievances_agent_tool = StructuredTool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="For Symptoms/Pain. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-medication_and_pain_management_agent_tool = StructuredTool.from_function(
-    func=execute_medication_and_pain_management_agent,
-    name="medication_and_pain_management_expert_agent",
-    description="For Meds/Prescriptions. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-services_and_assistance_agent_tool = StructuredTool.from_function(
-    func=execute_services_and_assistance_agent,
-    name="services_and_assistance_expert_agent",
-    description="For Social Services/Transport. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-call_closure_agent_tool = StructuredTool.from_function(
-    func=execute_call_closure_agent,
-    name="call_closure_expert_agent",
-    description="For closing the call. Requires 'query' and 'demo_name'.",
-    args_schema=AgentInput
-)
-
-# ... (Main Agent Build Logic) ...
-main_tools = [
-    call_initiation_agent_tool, 
-    symptom_grievances_agent_tool, 
-    medication_and_pain_management_agent_tool, 
-    services_and_assistance_agent_tool, 
-    call_closure_agent_tool, 
-    get_intent_map
-]
-
-main_agent = build_agent_executors(model, main_prompt, main_tools)
-
-
-call_initiation_prompt = """
-You are the Call Initiation Expert.
-Your goal is to verify Identity.
-
-STRICT INSTRUCTIONS:
-1. You DO NOT need to look for a 'demo_name' or 'ID'.
-2. Simply call the tool `get_clinical_summary`. It requires NO arguments.
-3. The tool will automatically fetch the correct data for this session.
-4. Once you get the Date of Birth, answer the nurse.
-"""
+    # Initialize Client (Still need region for upload to work correctly)
+    s3_client = boto3.client('s3', region_name=region)
+
+    try:
+        s3_key = f"{folder_prefix}{s3_filename}"
+        
+        # 1. Upload File
+        s3_client.upload_file(
+            local_file_path,
+            bucket_name,
+            s3_key,
+            ExtraArgs={
+                'ContentType': 'application/pdf',
+                'ContentDisposition': 'attachment' # Still good to keep
+            }
+        )
+        
+        # 2. Construct Direct URL (Traditional Way)
+        # Format: https://{bucket}.s3.{region}.amazonaws.com/{key}
+        direct_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{s3_key}"
+        
+        print(f"[S3] Upload successful. Direct URL: {direct_url}")
+        return True, direct_url
+
+    except ClientError as e:
+        print(f"[S3 ERROR] {e}")
+        return False, str(e)
