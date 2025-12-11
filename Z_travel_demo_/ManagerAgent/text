@@ -1,234 +1,109 @@
-curl -X POST "http://localhost:6200/aa-api/v1/utility/get_query" \
-     -H "Content-Type: application/json" \
-     -d '{
-           "user_input": "Hello, my name is Beth. I is a registered nurse. Is this John Example?",
-           "demo_name": "outreach_engagement_1",
-           "domain": "healthcare",
-           "persona": "neutral",
-           "customer_details": {
-               "name": "John Example",
-               "dob": "1980-08-15",
-               "member_id": "123456789",
-               "address": "123 Main St"
-           }
-         }'
-
-
-
- Mid-Call Response (Testing Persistence)
-
-curl -X POST "http://localhost:6200/aa-api/v1/utility/get_query" \
-     -H "Content-Type: application/json" \
-     -d '{
-           "session_id": "YOUR_SESSION_ID_HERE",
-           "user_input": "Could you verify your date of birth for me please?",
-           "demo_name": "outreach_engagement_1",
-           "domain": "healthcare",
-           "persona": "neutral",
-           "customer_details": {
-               "name": "John Example",
-               "dob": "1980-08-15"
-           }
-         }'
-
-
-
-
-
-
-from functools import partial
-from typing import Dict, Any, Union
-from langchain.tools import Tool, StructuredTool
-from pydantic import BaseModel, Field
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from components.prompts import *
-from components.llm import Llm
-from components.tools import get_clinical_summary, get_process_map, get_intent_map
-
-# LLM Initialization
-obj_llm = Llm()
-model = obj_llm.model
-
-# --- 1. FLEXIBLE INPUT SCHEMA ---
-# The LLM might pass a String OR a Dictionary. We accept both to prevent crashes.
-class AgentInput(BaseModel):
-    query: str = Field(description="The user's query.")
-    demo_name: str = Field(description="The configuration ID (e.g., 'outreach_engagement_1').")
-    customer_details: Union[dict, str] = Field(
-        description="The FULL customer_details dictionary from your state."
-    )
-
-# --- 2. PROMPT BUILDING ---
-def build_agent_executors(llm_model, prompt_val, tools_list):
-    prompt_template = ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(prompt_val), 
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
+def upload_pdf_to_s3(local_file_path, s3_filename):
+    """
+    Uploads file and returns a temporary accessible URL (Presigned URL)
+    """
+    bucket_name = configuration['S3']['bucket_name']
+    folder_prefix = configuration['S3']['folder_prefix']
     
-    agent_template = create_tool_calling_agent(llm=llm_model, tools=tools_list, prompt=prompt_template)
+    # Initialize S3 client (Automatically picks up IAM Role on server, or local keys on laptop)
+    s3_client = boto3.client('s3')
     
-    return AgentExecutor(
-        agent=agent_template, 
-        tools=tools_list, 
-        verbose=True, 
-        handle_parsing_errors=True
-    )
+    try:
+        s3_key = f"{folder_prefix}{s3_filename}"
+        
+        # 1. Upload the file
+        s3_client.upload_file(
+            local_file_path,
+            bucket_name,
+            s3_key,
+            ExtraArgs={'ContentType': 'application/pdf'}
+        )
+        
+        # 2. Generate Presigned URL (Valid for 1 hour = 3600 seconds)
+        # The frontend can use this link immediately to download the file
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': s3_key},
+            ExpiresIn=3600 
+        )
+        
+        print(f"[S3] Upload successful. Generated URL.")
+        return True, presigned_url
 
-# --- 3. HELPER: ENSURE STRING FORMAT ---
-def ensure_string(details: Union[dict, str]) -> str:
-    """Converts dict to string if necessary, handling the Pydantic input flexibility."""
-    if isinstance(details, dict):
-        return str(details)
-    return details
+    except ClientError as e:
+        print(f"[S3 ERROR] {e}")
+        return False, str(e)
 
-# --- 4. EXECUTION FUNCTIONS ---
-
-def execute_call_initiation_agent(query: str, demo_name: str, customer_details: Union[dict, str]) -> str:
-    # Convert dict -> string for the Prompt
-    details_str = ensure_string(customer_details)
+def generate_pdf_report(json_evaluation, sid):
+    output_folder = "/tmp"
+    output_filename = f"QA_Insights_Report_{sid}.pdf"
+    chart_filename = f"category_scores_chart_{sid}.png"
     
-    # Safe Tools
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-    def safe_get_process(x=None): return get_process_map.invoke({"demo_name": demo_name})
+    output_path = os.path.join(output_folder, output_filename)
+    chart_path = os.path.join(output_folder, chart_filename)
 
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns DB verification info. No input required."
-    )
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns call script. No input required."
-    )
+    try:
+        # 1. Generate Chart
+        generate_horizontal_bar_chart(json_evaluation.get("Categories_Score", {}), chart_path)
+        
+        # 2. Build PDF (Same logic as your original code)
+        doc = SimpleDocTemplate(output_path, pagesize=A4)
+        elements = []
+        # ... [Your existing code to add paragraphs, tables, and the chart image] ...
+        # (Make sure to use 'chart_path' when adding the image)
+        
+        # Placeholder for your existing PDF element building logic:
+        # elements.append(Image(chart_path, width=480, height=280)) 
+        
+        doc.build(elements)
 
-    agent_executor = build_agent_executors(model, call_initiation_prompt, [safe_summary_tool, safe_process_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": details_str, # Passed as String
-        "demo_name": demo_name
-    })["output"]
+        # 3. Upload to S3
+        s3_filename = f"QA_insights_report_{sid}.pdf" # Clean filename
+        success, result = upload_pdf_to_s3(output_path, s3_filename)
+        
+        if success:
+            return result # This is the URL
+        else:
+            return None
 
-def execute_symptom_grievances_agent(query: str, demo_name: str, customer_details: Union[dict, str]) -> str:
-    details_str = ensure_string(customer_details)
+    except Exception as e:
+        print(f"Error generating PDF: {e}")
+        return None
+        
+    finally:
+        # 4. CLEANUP: Always remove files, even if error occurs
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        if os.path.exists(chart_path):
+            os.remove(chart_path)
 
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
 
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns clinical history. No input required."
-    )
 
-    agent_executor = build_agent_executors(model, symptom_clarification_customer_grievances_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": details_str,
-        "demo_name": demo_name
-    })["output"]
 
-def execute_medication_and_pain_management_agent(query: str, demo_name: str, customer_details: Union[dict, str]) -> str:
-    details_str = ensure_string(customer_details)
+@app.post(f"{configuration['api_url']['demo_url']}/evaluate")
+async def evaluate(query: ReportQuery):
+    try:
+        # ... [Your existing logic to load params, generate report, calc scores] ...
+        
+        # (Assume 'report' dictionary is now ready and contains scores)
+        
+        # --- NEW CODE START ---
+        
+        # Determine Session ID (use dummy if direct history)
+        sid_for_file = query.session_id if query.session_id else f"manual_{datetime.now().strftime('%H%M%S')}"
 
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
+        # Generate PDF and get URL
+        print("Generating PDF Report...")
+        pdf_url = generate_pdf_report(report, sid_for_file)
+        
+        if pdf_url:
+            report['pdf_report_url'] = pdf_url
+        else:
+            report['pdf_report_url'] = "Error: Could not generate report"
+            
+        # --- NEW CODE END ---
 
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns meds/pain info. No input required."
-    )
+        return jsonable_encoder(report)
 
-    agent_executor = build_agent_executors(model, medication_and_pain_management_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": details_str,
-        "demo_name": demo_name
-    })["output"]
-
-def execute_services_and_assistance_agent(query: str, demo_name: str, customer_details: Union[dict, str]) -> str:
-    details_str = ensure_string(customer_details)
-
-    def safe_get_summary(x=None): return get_clinical_summary.invoke({"demo_name": demo_name})
-
-    safe_summary_tool = Tool.from_function(
-        func=safe_get_summary, name="get_clinical_summary",
-        description="Returns social services info. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, services_and_assistance_prompt, [safe_summary_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": details_str,
-        "demo_name": demo_name
-    })["output"]
-
-def execute_call_closure_agent(query: str, demo_name: str, customer_details: Union[dict, str]) -> str:
-    details_str = ensure_string(customer_details)
-
-    def safe_get_process(x=None): return get_process_map.invoke({"demo_name": demo_name})
-
-    safe_process_tool = Tool.from_function(
-        func=safe_get_process, name="get_process_map",
-        description="Returns closure scripts. No input required."
-    )
-
-    agent_executor = build_agent_executors(model, call_closure_prompt, [safe_process_tool])
-    
-    return agent_executor.invoke({
-        "input": query, 
-        "chat_history": [],
-        "customer_details": details_str,
-        "demo_name": demo_name
-    })["output"]
-
-# --- 5. MAIN AGENT TOOLS ---
-
-call_initiation_agent_tool = StructuredTool.from_function(
-    func=execute_call_initiation_agent,
-    name="call_initiation_expert_agent",
-    description="For Verification/DOB/Name. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-symptom_grievances_agent_tool = StructuredTool.from_function(
-    func=execute_symptom_grievances_agent,
-    name="symptom_grievances_expert_agent",
-    description="For Symptoms/Pain. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-medication_and_pain_management_agent_tool = StructuredTool.from_function(
-    func=execute_medication_and_pain_management_agent,
-    name="medication_and_pain_management_expert_agent",
-    description="For Meds/Prescriptions. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-services_and_assistance_agent_tool = StructuredTool.from_function(
-    func=execute_services_and_assistance_agent,
-    name="services_and_assistance_expert_agent",
-    description="For Social Services/Transport. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-call_closure_agent_tool = StructuredTool.from_function(
-    func=execute_call_closure_agent,
-    name="call_closure_expert_agent",
-    description="For Call End. Requires 'query', 'demo_name', and 'customer_details'.",
-    args_schema=AgentInput
-)
-
-main_tools = [
-    call_initiation_agent_tool, symptom_grievances_agent_tool, 
-    medication_and_pain_management_agent_tool, services_and_assistance_agent_tool, 
-    call_closure_agent_tool, get_intent_map
-]
-
-main_agent = build_agent_executors(model, main_prompt, main_tools)
+    except Exception as e:
+        # ... [Your error handling] ...
