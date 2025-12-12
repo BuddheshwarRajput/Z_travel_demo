@@ -1,4 +1,153 @@
 import os
+import boto3
+import matplotlib
+# CRITICAL: Switch backend to 'Agg' to prevent server crashes on EKS/EC2
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from datetime import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from botocore.exceptions import ClientError
+import traceback
+
+# ======================================================
+# CONFIGURATION SECTION (EDIT THIS)
+# ======================================================
+configuration = {
+    "S3": {
+        "bucket_name": "YOUR_BUCKET_NAME_HERE",      # e.g., "highmark-training-ai-file-storage"
+        "region": "us-east-1",                       # e.g., "us-east-1"
+        "folder_prefix": "evaluation_reports/"       # e.g., "reports/" (Ensure it ends with /)
+    }
+}
+
+# ======================================================
+# 1. Helper: Generate Chart (Thread-Safe)
+# ======================================================
+def generate_horizontal_bar_chart(categories_score, chart_path):
+    """
+    Generates a horizontal bar chart and saves it to the specified path.
+    Uses a new figure instance to avoid thread contention.
+    """
+    categories = list(categories_score.keys())
+    # Clean percentages (remove %) and convert to float
+    scores = [float(v.replace('%', '')) for v in categories_score.values()]
+
+    colors_list = [
+        (0.2, 0.4, 1.0, 0.85) if s >= 80 else (1.0, 0.3, 0.3, 0.8)
+        for s in scores
+    ]
+
+    # Create a specific figure object instead of using global plt instance
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    bars = ax.barh(categories, scores, color=colors_list, edgecolor='black')
+    
+    for i, bar in enumerate(bars):
+        ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height()/2, 
+                f"{scores[i]}%", va='center', fontsize=10, color='black')
+    
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Score (%)", fontsize=12)
+    ax.set_title("Call Evaluation Analysis", fontsize=14, color='navy', pad=15)
+    ax.invert_yaxis()
+    ax.grid(axis="x", linestyle="--", alpha=0.4)
+    
+    plt.tight_layout()
+    fig.savefig(chart_path, dpi=300)
+    plt.close(fig) # Explicitly close to free memory
+
+# ======================================================
+# 2. Helper: Upload & Sign
+# ======================================================
+def upload_pdf_to_s3(local_file_path, s3_filename):
+    """
+    Uploads PDF to S3 using the IAM Role and generates a Presigned URL.
+    Returns: (success: bool, url_or_error: str)
+    """
+    # Load config from the dictionary defined at the top
+    bucket_name = configuration['S3']['bucket_name']
+    region = configuration['S3']['region']
+    folder_prefix = configuration['S3']['folder_prefix']
+    
+    # Initialize Client with Region (Required for SigV4 Presigned URLs)
+    s3_client = boto3.client('s3', region_name=region)
+
+    try:
+        s3_key = f"{folder_prefix}{s3_filename}"
+        
+        # 1. Upload File
+        s3_client.upload_file(
+            local_file_path,
+            bucket_name,
+            s3_key,
+            ExtraArgs={
+                'ContentType': 'application/pdf',
+                'ContentDisposition': 'attachment'
+            }
+        )
+        
+        # 2. Generate Presigned URL (Valid for 5 minutes / 300 seconds)
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': s3_key},
+            ExpiresIn=300
+        )
+        
+        print(f"[S3] Upload successful for {s3_filename}")
+        return True, presigned_url
+
+    except ClientError as e:
+        error_msg = f"S3 ClientError: {str(e)}"
+        print(f"[S3 ERROR] {error_msg}")
+        return False, error_msg
+    except Exception as e:
+        error_msg = f"S3 Unexpected Error: {str(e)}"
+        print(f"[S3 ERROR] {error_msg}")
+        return False, error_msg
+
+# ======================================================
+# 3. Main Function: Generate Report
+# ======================================================
+def generate_pdf_report(json_evaluation, sid):
+    """
+    Orchestrates PDF creation, chart generation, and S3 upload.
+    Returns: Presigned URL (str) or None if failed.
+    """
+    # Use /tmp for ephemeral storage (safe for Lambda/Containers)
+    output_folder = "/tmp" 
+    output_filename = f"QA_Insights_Report_{sid}.pdf"
+    chart_filename = f"category_scores_chart_{sid}.png"
+    
+    output_path = os.path.join(output_folder, output_filename)
+    chart_path = os.path.join(output_folder, chart_filename)
+
+    try:
+        # --- A. Generate Chart ---
+        generate_horizontal_bar_chart(json_evaluation.get("Categories_Score", {}), chart_path)
+
+        # --- B. Build PDF Document ---
+        doc = SimpleDocTemplate(output_path, pagesize=A4)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Custom Styles
+        styles.add(ParagraphStyle(name='CustomTitle', fontSize=16, leading=20, spaceAfter=12, textColor=colors.darkblue))
+        styles.add(ParagraphStyle(name='SectionHeader', fontSize=13, leading=16, spaceAfter=8, textColor=colors.blue))
+        styles.add(ParagraphStyle(name='Body', fontSize
+
+
+
+
+
+
+
+
+
+
+import os
 import json
 import boto3
 import matplotlib
