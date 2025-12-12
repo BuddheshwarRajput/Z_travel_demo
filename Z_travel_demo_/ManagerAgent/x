@@ -1,3 +1,74 @@
+
+def upload_pdf_to_s3(local_file_path, s3_filename, bucket_name, folder_prefix, region):
+    """
+    Uploads PDF using passed arguments instead of global config.
+    """
+    # Initialize Client (Use the passed region)
+    s3_client = boto3.client('s3', region_name=region)
+
+    try:
+        s3_key = f"{folder_prefix}{s3_filename}"
+        
+        # Upload
+        s3_client.upload_file(
+            local_file_path,
+            bucket_name,
+            s3_key,
+            ExtraArgs={
+                'ContentType': 'application/pdf',
+                'ContentDisposition': 'attachment'
+            }
+        )
+        
+        # Generate URL
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': s3_key},
+            ExpiresIn=300
+        )
+        
+        return True, presigned_url
+
+    except ClientError as e:
+        print(f"[S3 ERROR] {e}")
+        return False, str(e)
+    except Exception as e:
+        print(f"[S3 ERROR] {e}")
+        return False, str(e)
+
+
+
+
+
+
+def generate_pdf_report(json_evaluation, sid):
+    # ... (All your existing PDF generation logic) ...
+    
+    # --- C. Upload to S3 ---
+    s3_final_name = f"QA_insights_report_{sid}.pdf"
+    
+    # Retrieve config values here to pass them down
+    bucket_name = configuration['S3']['bucket_name']
+    folder_prefix = configuration['S3']['folder_prefix']
+    region = configuration['S3']['region']
+
+    # PASS THEM EXPLICITLY HERE
+    success, result = upload_pdf_to_s3(
+        output_path, 
+        s3_final_name, 
+        bucket_name, 
+        folder_prefix, 
+        region
+    )
+    
+    # ... (Rest of logic) ...
+
+
+
+
+
+
+
 import os
 import boto3
 import matplotlib
