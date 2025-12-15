@@ -1,3 +1,94 @@
+import json
+from langchain_core.output_parsers import StrOutputParser
+# Import your tools as standard functions
+from components.tools import get_clinical_summary, get_intent_map
+from components.prompts import (
+    router_prompt_template, 
+    medication_prompt_template, 
+    symptom_prompt_template
+)
+from components.llm import model
+
+# --- BUILD CHAINS (Once) ---
+# Note: We use StrOutputParser, NOT AgentExecutor
+router_chain = router_prompt_template | model.with_structured_output(RouteDecision)
+medication_chain = medication_prompt_template | model | StrOutputParser()
+symptom_chain = symptom_prompt_template | model | StrOutputParser()
+
+# --- EXECUTION FUNCTION ---
+async def run_chain_flow(query_input: str, demo_name: str, chat_history: list, customer_details_str: str):
+    
+    # STEP 1: PYTHON FETCHES DATA (Zero Hallucination Risk)
+    # We use the 'demo_name' from the payload directly.
+    print(f"DEBUG: Fetching data for {demo_name}...")
+    
+    try:
+        # We call .invoke() because your tools might be LangChain 'Tool' objects
+        # If they are just functions, use get_clinical_summary(demo_name)
+        clinical_summary_text = get_clinical_summary.invoke(demo_name)
+        intent_map_data = get_intent_map.invoke(demo_name)
+    except Exception as e:
+        print(f"CRITICAL ERROR FETCHING DATA: {e}")
+        clinical_summary_text = "Error loading summary."
+        intent_map_data = {}
+
+    # STEP 2: ROUTER CHAIN
+    # We pass the fetched map to the router prompt
+    route_result = await router_chain.ainvoke({
+        "input": query_input,
+        "intent_map": intent_map_data 
+    })
+    
+    destination = route_result.destination
+    print(f"DEBUG: Routed to -> {destination}")
+
+    # STEP 3: SPECIALIST CHAIN
+    # We create the context dictionary. 
+    # The LLM receives the ANSWERS, not the tools.
+    chain_inputs = {
+        "input": query_input,
+        "chat_history": chat_history,
+        "clinical_summary": str(clinical_summary_text), # <--- INJECTED HERE
+        "customer_details": customer_details_str
+    }
+
+    if destination == "medication":
+        # The chain simply reads the {clinical_summary} variable and answers
+        response = await medication_chain.ainvoke(chain_inputs)
+        
+    elif destination == "symptom":
+        response = await symptom_chain.ainvoke(chain_inputs)
+
+    # ... handle other destinations ...
+    
+    return response
+
+
+# Symptom Prompt
+symptom_system_template = """
+You are the Symptom and Grievances Agent.
+You are playing the role of a customer.
+
+YOUR CLINICAL DATA (Source of Truth):
+{clinical_summary}   <--- The string from Python goes here
+
+INSTRUCTIONS:
+- Answer based ONLY on the data above.
+- Do NOT mention that you are reading from a file.
+"""
+
+symptom_prompt_template = ChatPromptTemplate.from_messages([
+    ("system", symptom_system_template),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+ 
+
+
+
+
+
+
 # main_agent.py
 
 # 1. Import your tools as simple functions
