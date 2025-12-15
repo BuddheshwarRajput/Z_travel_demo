@@ -1,0 +1,137 @@
+This is a classic "Nested Agent" bottleneck. Your current architecture forces the LLM to "think" about moving data around rather than just answering.
+Here is the diagnosis and the optimized LangChain implementation.
+The Core Problem: Too Many "Thinking" Steps
+Currently, for a simple question like "What meds am I on?", your flow does this (3+ LLM Calls):
+Orchestrator: "User asked about meds. I should call the medication_expert."
+Sub-Agent: "I need to answer about meds. I don't have the data. I'll call get_clinical_summary."
+Sub-Agent: "Okay, I have the data. Here is the answer."
+Orchestrator: "The sub-agent said X. I will tell the user X."
+The Solution: "Context Injection" + Router Pattern
+We will change this to 2 LLM calls max (Router -> Specialist).
+Pre-fetch Data: Since clinical_summary is read-only for the session, fetch it once at the start of the request. Don't make the LLM ask for it.
+Inject Context: Pass the summary directly into the System Prompt of the Specialist.
+Global History: Pass the chat_history list directly to the Specialist.
+Phase 1: The Optimized Specialist (Chain, not Agent)
+Since your sub-agents mostly just "read data and answer," we don't need the heavy AgentExecutor loop. We can use a standard LCEL Chain. This is much faster.
+
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+
+# 1. Define a standard prompt that EXPECTS the data as a string variable
+# We remove the "Tool call" logic and simply give it the data.
+medication_prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are the Medication and Pain Management Agent. 
+    You are playing the role of a customer talking to a nurse.
+    
+    YOUR CLINICAL DATA (Source of Truth):
+    {clinical_summary}
+    
+    YOUR DEMOGRAPHICS:
+    {customer_details}
+    
+    INSTRUCTIONS:
+    - Answer based ONLY on the clinical data above.
+    - If asked about pain, use the pain levels in the data.
+    - Speak naturally as the patient (first person).
+    """),
+    MessagesPlaceholder(variable_name="chat_history"), # <-- CRITICAL: Shared History
+    ("human", "{input}")
+])
+
+# 2. Create the Chain (No AgentExecutor needed for read-only tasks)
+# This executes in 1 round.
+medication_chain = medication_prompt | model | StrOutputParser()
+
+# Repeat this pattern for Symptom, Services, etc.
+symptom_chain = ChatPromptTemplate.from_messages([...]) | model | StrOutputParser()
+
+
+
+
+Phase 2: The Router (Replacing the Orchestrator)
+Instead of an Agent that "decides to call a tool," we use a lightweight Router Chain that outputs the key of the chain to use.
+
+
+from langchain_core.pydantic_v1 import BaseModel, Field
+from typing import Literal
+
+# Define the routing decision structure
+class RouteDecision(BaseModel):
+    destination: Literal["symptom", "medication", "services", "closure", "general"] = Field(
+        description="The specific specialist to handle the user's query."
+    )
+
+# Create a specialized prompt for routing
+router_system_prompt = """
+You are a router. Your job is to classify the user's input into one of these intents based on the Intent Map provided.
+INTENT MAP: {intent_map}
+
+Output ONLY the destination key.
+"""
+
+router_prompt = ChatPromptTemplate.from_messages([
+    ("system", router_system_prompt),
+    ("human", "{input}")
+])
+
+# Use 'with_structured_output' for 100% reliable routing (available in GPT-4)
+router_chain = router_prompt | model.with_structured_output(RouteDecision)
+
+
+Phase 3: The Main Execution (Stitching it together)
+This replaces your execute_call... wrappers. We do the work in the Python logic, not inside the LLM.
+
+async def run_optimized_flow(query_input: str, session_id: str, demo_name: str, chat_history: list):
+    
+    # STEP 1: PRE-FETCH DATA (The "Context Injection" Strategy)
+    # We fetch DB data here in Python. Fast. No LLM tokens used.
+    # Note: You can cache this per session_id to avoid hitting DB every turn
+    clinical_summary_text = get_clinical_summary(demo_name) 
+    intent_map_data = get_intent_map(demo_name)
+    cust_details = "..." # Fetch or pass from payload
+    
+    # STEP 2: ROUTE
+    # We pass the user input + intent map to the router
+    route_result = await router_chain.ainvoke({
+        "input": query_input,
+        "intent_map": intent_map_data
+    })
+    destination = route_result.destination
+    print(f"Routing to: {destination}")
+
+    # STEP 3: EXECUTE SPECIALIST
+    # We pass the GLOBAL history and the INJECTED summary
+    
+    common_inputs = {
+        "input": query_input,
+        "chat_history": chat_history,
+        "clinical_summary": clinical_summary_text,
+        "customer_details": cust_details
+    }
+
+    if destination == "medication":
+        response = await medication_chain.ainvoke(common_inputs)
+        
+    elif destination == "symptom":
+        response = await symptom_chain.ainvoke(common_inputs)
+        
+    elif destination == "closure":
+        # Closure might need process_map instead of clinical_summary
+        process_map = get_process_map(demo_name)
+        response = await closure_chain.ainvoke({**common_inputs, "process_map": process_map})
+        
+    else:
+        # Fallback or General Chat
+        response = "I'm not sure, could you repeat that?"
+
+    return response
+
+
+
+Why this solves your issues:
+Latency: We removed the Orchestrator's AgentExecutor overhead and the Sub-Agent's Tool Call overhead. It is now a straight shot: Router -> Specialist.
+Complexity: No more AgentInput, ensure_string, or nested safe_get_summary wrappers. The data is passed as simple variables.
+History: By passing chat_history into common_inputs, every specialist knows exactly what was said 5 minutes ago by the Symptom expert.
+Stability: Using with_structured_output for the router prevents the "Parsing Error" loops common in Agents.
+
+
