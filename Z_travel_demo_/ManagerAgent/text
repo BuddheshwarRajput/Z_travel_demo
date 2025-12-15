@@ -1,3 +1,91 @@
+
+import json
+# Import your existing tools. 
+# Even though they are decorated with @tool, they are still just Python functions!
+from components.tools import get_clinical_summary, get_intent_map, get_process_map
+from components.prompts import (
+    router_prompt_template, 
+    medication_prompt_template, 
+    symptom_prompt_template
+)
+# Import your model
+from components.llm import model
+
+# --- 1. SETUP CHAINS (Do this once) ---
+# Router
+router_chain = router_prompt_template | model.with_structured_output(RouteDecision)
+
+# Specialists (Chain = Prompt | LLM | String)
+medication_chain = medication_prompt_template | model | StrOutputParser()
+symptom_chain = symptom_prompt_template | model | StrOutputParser()
+
+
+# --- 2. EXECUTION FLOW (Force Demo Name Here) ---
+async def run_optimized_flow(query_input: str, demo_name: str, chat_history: list, customer_details_str: str):
+    
+    # ---------------------------------------------------------
+    # STEP A: FORCE THE DATA FETCH (No LLM involvement)
+    # ---------------------------------------------------------
+    print(f"DEBUG: Python is fetching data for demo_name: {demo_name}")
+    
+    # We call the tool functions directly. 
+    # Since they are Python functions, we just pass the string.
+    # Note: If your tool expects a Pydantic object, we pass a dict or object as needed.
+    
+    # Assuming get_clinical_summary takes a string or simple dict:
+    try:
+        # If your tool is an LC tool, use .invoke() or .run()
+        clinical_summary_text = get_clinical_summary.invoke(demo_name)
+    except:
+        # Fallback if it's a raw function
+        clinical_summary_text = get_clinical_summary(demo_name)
+
+    try:
+        intent_map_data = get_intent_map.invoke(demo_name)
+    except:
+        intent_map_data = get_intent_map(demo_name)
+        
+    print(f"DEBUG: Fetched Summary Length: {len(str(clinical_summary_text))}")
+
+    # ---------------------------------------------------------
+    # STEP B: ROUTE (Inject the Intent Map)
+    # ---------------------------------------------------------
+    route_result = await router_chain.ainvoke({
+        "input": query_input, 
+        "intent_map": intent_map_data  # <--- INJECTED DATA
+    })
+    
+    destination = route_result.destination
+    print(f"DEBUG: Routing to -> {destination}")
+
+    # ---------------------------------------------------------
+    # STEP C: EXECUTE SPECIALIST (Inject the Summary)
+    # ---------------------------------------------------------
+    
+    # Common inputs that every specialist needs
+    chain_inputs = {
+        "input": query_input,
+        "chat_history": chat_history, # <--- This fixes the "New Session" bug
+        "clinical_summary": clinical_summary_text, # <--- INJECTED DATA (Source of Truth)
+        "customer_details": customer_details_str
+    }
+
+    if destination == "medication":
+        # The prompt template has {clinical_summary} waiting for this data
+        response = await medication_chain.ainvoke(chain_inputs)
+        
+    elif destination == "symptom":
+        response = await symptom_chain.ainvoke(chain_inputs)
+        
+    # ... handle other cases ...
+    
+    return response
+
+
+
+
+
+
 import json
 
 @app.post("/aa-api/v1/utility/get_query")
