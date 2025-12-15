@@ -1,3 +1,121 @@
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+# --- ROUTER PROMPT ---
+router_system_template = """
+You are a router. Your job is to classify the user's input into one of these intents based on the Intent Map provided.
+INTENT MAP: {intent_map}
+
+Output ONLY the destination key.
+"""
+
+router_prompt_template = ChatPromptTemplate.from_messages([
+    ("system", router_system_template),
+    ("human", "{input}")
+])
+
+# --- SPECIALIST PROMPTS ---
+
+# Medication Agent
+medication_system_template = """
+You are the Medication and Pain Management Agent. 
+You are playing the role of a customer talking to a nurse.
+
+YOUR CLINICAL DATA (Source of Truth):
+{clinical_summary}
+
+YOUR DEMOGRAPHICS:
+{customer_details}
+
+INSTRUCTIONS:
+- Answer based ONLY on the clinical data above.
+- If asked about pain, use the pain levels in the data.
+- Speak naturally as the patient (first person).
+"""
+
+medication_prompt_template = ChatPromptTemplate.from_messages([
+    ("system", medication_system_template),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+# Symptom Agent
+symptom_system_template = """
+You are the Symptom and Grievances Agent.
+You are playing the role of a customer.
+
+YOUR CLINICAL DATA (Source of Truth):
+{clinical_summary}
+
+INSTRUCTIONS:
+- Describe symptoms exactly as they appear in the clinical data.
+- If the data says "left leg fracture", do not say "right leg".
+"""
+
+symptom_prompt_template = ChatPromptTemplate.from_messages([
+    ("system", symptom_system_template),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+
+from langchain_core.output_parsers import StrOutputParser
+from components.prompts import (
+    router_prompt_template, 
+    medication_prompt_template, 
+    symptom_prompt_template
+)
+# Assuming 'model' is your initialized LLM (e.g. GPT-4)
+
+# --- SETUP CHAINS (Do this once at startup) ---
+
+# Router Chain
+# We use 'with_structured_output' if using OpenAI/Pydantic, 
+# otherwise use a StrOutputParser and regex/json parsing.
+router_chain = router_prompt_template | model.with_structured_output(RouteDecision)
+
+# Specialist Chains
+# These are simple LCEL chains: Prompt -> LLM -> String
+medication_chain = medication_prompt_template | model | StrOutputParser()
+symptom_chain = symptom_prompt_template | model | StrOutputParser()
+
+
+# --- EXECUTION FLOW ---
+async def run_optimized_flow(query_input: str, demo_name: str, chat_history: list):
+    
+    # 1. Fetch Data (Python side)
+    clinical_summary_text = get_clinical_summary(demo_name)
+    intent_map_data = get_intent_map(demo_name)
+    
+    # 2. Route
+    route_result = await router_chain.ainvoke({
+        "input": query_input, 
+        "intent_map": intent_map_data
+    })
+    
+    # 3. Execute
+    if route_result.destination == "medication":
+        # Notice how the keys here match the {variables} in the imported prompt
+        return await medication_chain.ainvoke({
+            "input": query_input,
+            "chat_history": chat_history,
+            "clinical_summary": clinical_summary_text,
+            "customer_details": "..." # Add your details here
+        })
+        
+    elif route_result.destination == "symptom":
+        return await symptom_chain.ainvoke({
+            "input": query_input,
+            "chat_history": chat_history,
+            "clinical_summary": clinical_summary_text
+        })
+
+
+
+
+
+
+
+
 
 def upload_pdf_to_s3(local_file_path, s3_filename, bucket_name, folder_prefix, region):
     """
