@@ -1,3 +1,60 @@
+# main_agent.py
+
+# 1. Import your tools as simple functions
+from components.tools import get_clinical_summary, get_intent_map 
+
+async def run_optimized_flow(query_input: str, demo_name: str, chat_history: list, customer_details_str: str):
+    
+    # --- PHASE 1: PYTHON FETCHES DATA (100% Safe) ---
+    # We call the functions manually using the Correct Demo Name from payload
+    print(f"DEBUG: Pre-fetching data for {demo_name}...")
+    
+    try:
+        # Fetch the Map JSON
+        intent_map_data = get_intent_map.invoke(demo_name)
+        # Convert to string so we can put it in the prompt
+        intent_map_str = str(intent_map_data)
+    except Exception as e:
+        print(f"Error fetching map: {e}")
+        intent_map_str = "Error: Could not load intent map."
+
+    try:
+        # Fetch Clinical Summary
+        summary_data = get_clinical_summary.invoke(demo_name)
+        summary_str = str(summary_data)
+    except Exception as e:
+        summary_str = "No summary available."
+
+    # --- PHASE 2: CONFIGURE THE AGENT ---
+    
+    # CRITICAL: Do NOT include get_intent_map or get_clinical_summary here!
+    # The LLM already has the data in the prompt. It doesn't need the tools.
+    active_tools = [
+        call_initiation_agent_tool, 
+        symptom_grievances_agent_tool, 
+        # ... other ACTION tools only ...
+    ]
+
+    # Initialize the Agent with the INJECTED Prompt
+    # We use .partial() to lock in the static prompt data
+    prompt_with_context = main_prompt_injected.format(
+        intent_map_context=intent_map_str, # <--- Data goes here
+        customer_details=customer_details_str,
+        demo_name=demo_name,
+        domain="Health", # or from payload
+        persona="Patient" # or from payload
+    )
+    
+    # Note: If using ChatPromptTemplate, pass these as variables in .invoke() instead of .format()
+
+    # --- PHASE 3: EXECUTE ---
+    # Now the agent runs. It sees the map in the text. 
+    # It CANNOT hallucinate the demo_name because it never calls the DB tools.
+    
+    # ... your existing agent execution logic ...
+
+
+
 
 import json
 # Import your existing tools. 
