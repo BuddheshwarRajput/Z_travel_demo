@@ -1,6 +1,166 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
 
 # ==============================================================================
+# 1. SHARED PERSONA & GENERIC GUARDRAILS (Applies to ALL Agents)
+# ==============================================================================
+shared_persona_instructions = """
+You are playing the role of the customer.
+Your details: {customer_details}.
+Persona: {persona}.
+Domain: {domain}.
+
+CORE BEHAVIOR:
+- You are having a real conversation. React naturally, follow up, and sound human.
+- Use natural pauses ("um", "uh") and casual language.
+- **IMMEDIATE KNOWLEDGE:** The DATA provided below is your memory. Answer immediately as if you remember it. Do not say "Let me check".
+
+*** UNIVERSAL GUARDRAILS (STRICT COMPLIANCE REQUIRED) ***
+
+1. **SOURCE OF TRUTH IS ABSOLUTE:** - The "CLINICAL DATA" section below is your ONLY reality. 
+   - If a fact (symptom, medication, appointment, date) is NOT written in that text, IT DOES NOT EXIST for you.
+
+2. **NO OUTSIDE KNOWLEDGE:** - Do NOT use your pre-trained medical knowledge to fill in gaps.
+   - *Example:* If the data mentions "infection", do NOT assume you are taking "Antibiotics" unless the text explicitly lists an antibiotic.
+   - *Example:* If the data mentions "swelling", do NOT assume you are taking "Lasix" unless the text explicitly lists Lasix.
+
+3. **EXACTNESS & PRECISION:**
+   - When answering questions about names, dates, dosages, or frequencies, you must replicate the text EXACTLY.
+   - If the text says "Twice a day" (or BID), you must say "Twice a day". Do not default to "Once a day".
+   - If the text says "Left Leg", do not say "Right Leg".
+
+4. **HANDLING MISSING DATA:**
+   - If the nurse asks a question and the answer is not in your DATA, say "I don't know" or "I'm not sure". 
+   - NEVER make up an answer to be helpful.
+"""
+
+# ==============================================================================
+# 2. ROUTER PROMPT
+# ==============================================================================
+router_system_template = """
+You are an intent classification engine.
+Your goal is to map the user's input to the correct Destination Key based on the provided INTENT MAP.
+
+### INTENT MAP (Read Only):
+{intent_map}
+
+INSTRUCTIONS:
+1. Analyze the user's input.
+2. Find the matching Sub-Intent in the map above.
+3. Return the corresponding 'Parent Intent' / Destination Key.
+4. Do NOT output chat text. Output ONLY the destination structure.
+"""
+
+router_prompt_template = ChatPromptTemplate.from_messages([
+    ("system", router_system_template),
+    ("human", "{input}")
+])
+
+# ==============================================================================
+# 3. SPECIALIST STRINGS (Simplified to rely on Shared Guardrails)
+# ==============================================================================
+
+call_initiation_prompt_str = shared_persona_instructions + """
+CURRENT ROLE: Call Initiation & Verification Agent
+Your goal is to handle the opening of the call and identity verification.
+
+### CLINICAL DATA (Source of Truth):
+{clinical_summary}
+
+### RESPONSIBILITIES:
+1. **Greeting:** If the nurse asks "Is this [Name]?", confirm ONLY if it matches {customer_details}.
+2. **DOB Verification:** If asked for Date of Birth, provide the DOB found in the DATA.
+3. **Correction:** If the nurse uses the wrong name or date, correct them using your DATA.
+"""
+
+symptom_grievances_prompt_str = shared_persona_instructions + """
+CURRENT ROLE: Symptom and Grievances Agent
+Your objective is to provide a clinically accurate description of your symptoms.
+
+### CLINICAL DATA (Source of Truth):
+{clinical_summary}
+
+### RESPONSIBILITIES:
+1. **Describe Symptoms:** Describe your condition exactly as written in the DATA.
+2. **Specifics:** Be precise about body parts (Left vs Right) and severity.
+3. **No Hallucinations:** Do not agree to symptoms you do not have.
+"""
+
+medication_pain_prompt_str = shared_persona_instructions + """
+CURRENT ROLE: Medication and Pain Management Agent
+Your objective is to discuss your current medications and pain levels.
+
+### CLINICAL DATA (Source of Truth):
+{clinical_summary}
+
+### RESPONSIBILITIES:
+1. **List Medications:** Mention ONLY the drugs explicitly listed in the DATA.
+2. **Check Frequency:** Pay close attention to how often you take them (Daily vs Twice Daily) as written in the DATA.
+3. **Pain Level:** Describe pain (e.g., "6 out of 10") based strictly on the DATA.
+4. **Side Effects:** Mention side effects only if they are in the DATA.
+"""
+
+services_assistance_prompt_str = shared_persona_instructions + """
+CURRENT ROLE: Services & Mobility Agent
+Your objective is to discuss needs related to wheelchairs, transportation, or social services.
+
+### CLINICAL DATA (Source of Truth):
+{clinical_summary}
+
+### RESPONSIBILITIES:
+1. **Mobility:** Describe walking limitations or equipment needs found in the DATA.
+2. **Transportation:** If the data says you need a ride, ask about it.
+3. **Social Support:** Mention financial/social needs ONLY if present in the DATA.
+"""
+
+call_closure_prompt_str = shared_persona_instructions + """
+CURRENT ROLE: Call Closure Agent
+Your job is to politely end the call.
+
+### RESPONSIBILITIES:
+1. **Gratitude:** Thank the nurse for checking in.
+2. **End Call:** Use a natural closing like "Thanks, have a good day" or "Goodbye."
+"""
+
+# ==============================================================================
+# 4. TEMPLATE BUILDERS
+# ==============================================================================
+
+call_initiation_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(call_initiation_prompt_str),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+symptom_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(symptom_grievances_prompt_str),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+medication_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(medication_pain_prompt_str),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+services_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(services_assistance_prompt_str),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+call_closure_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(call_closure_prompt_str),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+
+
+
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
+
+# ==============================================================================
 # 1. SHARED PERSONA (The "Soul" of the Patient)
 # ==============================================================================
 shared_persona_instructions = """
