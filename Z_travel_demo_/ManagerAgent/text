@@ -1,3 +1,97 @@
+import json
+
+@app.post("/aa-api/v1/utility/get_query")
+async def chat(query: UserQuery):
+    # 1. Extract from Payload
+    # query.customer_details is likely a dict coming from the frontend JSON
+    raw_details = query.customer_details 
+    
+    # 2. Format for LLM (Crucial Step)
+    # We convert the dict to a pretty-printed JSON string so the LLM can read it easily.
+    if isinstance(raw_details, dict):
+        customer_details_str = json.dumps(raw_details, indent=2)
+    else:
+        customer_details_str = str(raw_details)
+
+    # 3. Get History (Your existing logic)
+    sid = query.session_id
+    # ... session retrieval logic ...
+    chat_history = session_data["chat_history"]
+
+    # 4. PASS IT DOWN
+    # We pass the STRINGS, not the objects
+    response_text = await run_optimized_flow(
+        query_input=query.user_input,
+        demo_name=query.demo_name,
+        chat_history=chat_history,
+        customer_details_str=customer_details_str  # <--- Passing it here
+    )
+    
+    # ... return response ...
+
+
+# main_agent.py
+
+async def run_optimized_flow(
+    query_input: str, 
+    demo_name: str, 
+    chat_history: list, 
+    customer_details_str: str # <--- Receive it here
+):
+    
+    # 1. Fetch Static Data (Database)
+    clinical_summary_text = get_clinical_summary(demo_name)
+    intent_map_data = get_intent_map(demo_name)
+    
+    # 2. Route (Uses input + intent map)
+    route_result = await router_chain.ainvoke({
+        "input": query_input, 
+        "intent_map": intent_map_data
+    })
+    
+    destination = route_result.destination
+    
+    # 3. Define the Common Inputs
+    # This dictionary maps to the {variables} in your prompt templates
+    chain_inputs = {
+        "input": query_input,
+        "chat_history": chat_history,
+        "clinical_summary": clinical_summary_text,
+        "customer_details": customer_details_str  # <--- INJECTING IT HERE
+    }
+
+    # 4. Execute the chosen chain
+    if destination == "medication":
+        # The medication_prompt_template has {customer_details}, so this works automatically
+        return await medication_chain.ainvoke(chain_inputs)
+        
+    elif destination == "symptom":
+        # Even if symptom prompt doesn't use customer_details, passing extra keys is harmless
+        return await symptom_chain.ainvoke(chain_inputs)
+        
+    elif destination == "services":
+        return await services_chain.ainvoke(chain_inputs)
+
+    # ... handle other cases
+
+
+medication_system_template = """
+You are the Medication Agent.
+
+# HERE IS THE SLOT FOR THE DATA
+USER DEMOGRAPHICS:
+{customer_details}
+
+CLINICAL HISTORY:
+{clinical_summary}
+
+Answer the user:
+"""
+
+
+
+
+
 def upload_pdf_to_s3(local_file_path, s3_filename):
     """
     Uploads file and returns a temporary accessible URL (Presigned URL)
