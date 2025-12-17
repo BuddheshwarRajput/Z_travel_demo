@@ -1,3 +1,103 @@
+import json
+from prompthub import get_prompt
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+async def run_orchestrator_flow(user_input, demo_name, customer_details, ...):
+
+    # 1. Fetch Data (Parallel is best)
+    intent_map_str = await get_intent_map(demo_name)
+    clinical_summary_str = await get_clinical_summary(demo_name)
+
+    # 2. RUN ORCHESTRATOR
+    # Note: We inject the map here so the LLM doesn't have to "call" it
+    orch_template = ChatPromptTemplate.from_template(get_prompt("orchestrator_prompt"))
+    orch_chain = orch_template | model | StrOutputParser()
+    
+    orch_response = await orch_chain.ainvoke({
+        "input": user_input,
+        "intent_map": intent_map_str
+    })
+
+    # 3. Parse Routing Decision
+    try:
+        decision = json.loads(orch_response)
+        route = decision.get("route")
+    except:
+        route = "fallback" # Safety net
+
+    print(f"Orchestrator selected: {route}")
+
+    # 4. SELECT & RUN SPECIALIST CHAIN
+    if route == "symptom_grievances":
+        prompt_key = "symptom_clarification_customer_grievances_prompt"
+    elif route == "medication_and_pain_management":
+        prompt_key = "medication_and_pain_management_prompt"
+    elif route == "call_initiation":
+        prompt_key = "call_initiation_prompt"
+    else:
+        prompt_key = "FallBackAgent_Prompt"
+
+    # Build the specialist chain dynamically
+    specialist_template = ChatPromptTemplate.from_template(get_prompt(prompt_key))
+    specialist_chain = specialist_template | model | StrOutputParser()
+
+    # Run it with the FULL context
+    final_answer = await specialist_chain.ainvoke({
+        "input": user_input,
+        "clinical_summary": clinical_summary_str, # The specialist reads this
+        "customer_details": customer_details,
+        "demo_name": demo_name
+    })
+
+    return final_answer
+
+
+
+
+
+
+import os
+import yaml
+
+# Define path relative to this script
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+YAML_PATH = os.path.join(BASE_DIR, "prompts.yaml")
+
+_prompts_data = {}
+
+def load_prompts():
+    """Forces a reload of the YAML file."""
+    global _prompts_data
+    if not os.path.exists(YAML_PATH):
+        raise FileNotFoundError(f"Prompt file not found at: {YAML_PATH}")
+    
+    with open(YAML_PATH, "r", encoding="utf-8") as file:
+        _prompts_data = yaml.safe_load(file)
+
+def get_prompt(prompt_name: str) -> str:
+    """Retrieve a raw prompt string by name."""
+    if not _prompts_data:
+        load_prompts()
+        
+    if prompt_name not in _prompts_data:
+        raise KeyError(f"Prompt '{prompt_name}' not found in {YAML_PATH}. Available: {list(_prompts_data.keys())}")
+    
+    return _prompts_data[prompt_name]
+
+def list_prompts() -> list:
+    """List all available prompt names."""
+    if not _prompts_data:
+        load_prompts()
+    return list(_prompts_data.keys())
+
+# Load on import
+load_prompts()
+
+
+
+
+
 
 # main_agent.py
 
