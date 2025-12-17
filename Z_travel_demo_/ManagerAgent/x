@@ -1,3 +1,81 @@
+import os
+import yaml
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
+
+# Locate the YAML file relative to this script
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+YAML_PATH = os.path.join(BASE_DIR, "prompts.yaml")
+
+_PROMPT_CACHE = {}
+
+def load_prompts():
+    """Forces a reload of the YAML file (useful for hot-reloading)."""
+    global _PROMPT_CACHE
+    if not os.path.exists(YAML_PATH):
+        raise FileNotFoundError(f"Prompt file not found at: {YAML_PATH}")
+        
+    with open(YAML_PATH, "r") as f:
+        _PROMPT_CACHE = yaml.safe_load(f)
+
+def list_prompts():
+    """Returns a list of available prompt keys."""
+    if not _PROMPT_CACHE:
+        load_prompts()
+    return list(_PROMPT_CACHE.keys())
+
+def get_raw_prompt(key: str) -> str:
+    """Returns the raw string from YAML, injecting shared persona if needed."""
+    if not _PROMPT_CACHE:
+        load_prompts()
+    
+    raw_text = _PROMPT_CACHE.get(key)
+    if not raw_text:
+        raise KeyError(f"Prompt '{key}' not found in prompts.yaml")
+    
+    # 1. Fetch Shared Persona
+    shared_text = _PROMPT_CACHE.get("shared_persona", "")
+    
+    # 2. Inject Shared Persona into the specific prompt if the placeholder exists
+    # This replaces {shared_persona} in the YAML text with the actual text
+    if "{shared_persona}" in raw_text:
+        try:
+            # We use .replace instead of .format to avoid breaking other {variables}
+            raw_text = raw_text.replace("{shared_persona}", shared_text)
+        except Exception as e:
+            print(f"Error injecting shared persona into {key}: {e}")
+
+    return raw_text
+
+def get_chat_template(key: str) -> ChatPromptTemplate:
+    """
+    Returns a Ready-to-Use LangChain ChatPromptTemplate.
+    Automatically adds the 'chat_history' placeholder and 'human' input.
+    """
+    system_prompt_str = get_raw_prompt(key)
+    
+    # Special handling for Router (it doesn't need chat history in your specific flow)
+    if key == "router_system":
+         return ChatPromptTemplate.from_messages([
+            ("system", system_prompt_str),
+            ("human", "{input}")
+        ])
+
+    # Standard Agent Template (System + History + User)
+    return ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(system_prompt_str),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}")
+    ])
+
+# Load immediately on import
+load_prompts()
+
+
+
+
+
+
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # --- ROUTER PROMPT ---
