@@ -1,3 +1,72 @@
+
+# main_agent.py
+
+# Direct Import!
+from prompthub import symptom_grievances, medication_pain, router_system
+
+# Use them directly in your Chain builder
+# (You still need to wrap them in ChatPromptTemplate here in your main file)
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
+
+# Build the Template
+symptom_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(symptom_grievances), # <--- Imported Variable
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}")
+])
+
+symptom_chain = symptom_prompt_template | model | StrOutputParser()
+
+
+
+
+import os
+import yaml
+import sys
+
+# 1. Setup Paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+YAML_PATH = os.path.join(BASE_DIR, "prompts.yaml")
+
+# 2. Load YAML Data
+def _load_yaml():
+    if not os.path.exists(YAML_PATH):
+        raise FileNotFoundError(f"Prompt file not found at: {YAML_PATH}")
+    with open(YAML_PATH, "r") as f:
+        return yaml.safe_load(f) or {}
+
+_data = _load_yaml()
+
+# 3. Inject Shared Persona Logic
+# We want to pre-process the strings so {shared_persona} is already filled in.
+shared_persona_text = _data.get("shared_persona", "")
+processed_prompts = {}
+
+for key, raw_text in _data.items():
+    if isinstance(raw_text, str) and "{shared_persona}" in raw_text:
+        # Inject the shared text immediately
+        processed_prompts[key] = raw_text.replace("{shared_persona}", shared_persona_text)
+    else:
+        processed_prompts[key] = raw_text
+
+# 4. Expose Variables to Python
+# This tricky line adds the dictionary keys to the module's "globals"
+# so you can import them as if they were defined in Python.
+globals().update(processed_prompts)
+
+# Optional: Define __all__ so IDEs like PyCharm know what's available
+__all__ = list(processed_prompts.keys())
+
+
+
+
+
+
+
+
+
+
+
 import os
 import yaml
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
