@@ -1,3 +1,55 @@
+graph TD
+    %% Entry Point
+    START((START)) --> orchestrator
+
+    %% Orchestrator Logic
+    orchestrator{Orchestrator}
+    orchestrator -- route: call_greeting --> agent_call_greeting
+    orchestrator -- route: verification --> agent_verification
+    orchestrator -- route: symptoms_grievances --> agent_symptoms_grievances
+    orchestrator -- route: medication_and_pain --> agent_medication_and_pain_management
+    orchestrator -- route: services_and_assistance --> agent_services_and_assistance
+    orchestrator -- route: call_closure --> agent_closing
+
+    %% Agent Decision Points (Tools vs Finalizer)
+    agent_call_greeting --> cond_greet{Has Tools?}
+    cond_greet -- Yes --> tools_call_greeting
+    cond_greet -- No --> finalizer
+
+    agent_verification --> cond_ver{Has Tools?}
+    cond_ver -- Yes --> tools_verification
+    cond_ver -- No --> finalizer
+
+    agent_symptoms_grievances --> cond_sym{Has Tools?}
+    cond_sym -- Yes --> tools_symptoms_grievances
+    cond_sym -- No --> finalizer
+
+    agent_medication_and_pain_management --> cond_med{Has Tools?}
+    cond_med -- Yes --> tools_medication_and_pain_management
+    cond_med -- No --> finalizer
+
+    agent_services_and_assistance --> cond_serv{Has Tools?}
+    cond_serv -- Yes --> tools_services_and_assistance
+    cond_serv -- No --> finalizer
+
+    %% Specialized Edge
+    agent_closing --> finalizer
+
+    %% Tool Loops (Returning to Agents)
+    tools_call_greeting --> agent_call_greeting
+    tools_verification --> agent_verification
+    tools_symptoms_grievances --> agent_symptoms_grievances
+    tools_medication_and_pain_management --> agent_medication_and_pain_management
+    tools_services_and_assistance --> agent_services_and_assistance
+
+    %% Final Step
+    finalizer --> END((END))
+
+
+
+
+
+
 import json
 from prompthub import get_prompt
 from langchain_core.prompts import ChatPromptTemplate
