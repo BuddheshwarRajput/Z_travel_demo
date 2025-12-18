@@ -1,3 +1,129 @@
+from langchain.prompts import PromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
+from components.state import GraphState
+
+# Define the prompt specifically for the fallback behavior
+fallback_prompt = """
+You are acting as a PATIENT in a simulation with a Nurse. 
+Your goal is to simulate a realistic patient experience for training purposes.
+
+CURRENT SITUATION:
+The nurse has just said something that is confusing, out of context, or irrelevant to your medical situation.
+You are NOT an AI assistant. You are a human patient. 
+
+INSTRUCTIONS:
+1. React with mild confusion or polite hesitation.
+2. Do NOT answer off-topic questions (e.g., coding, politics, general knowledge).
+3. Gently steer the conversation back to your symptoms, your health, or the reason for the call.
+4. Keep your response short and natural.
+
+CUSTOMER DETAILS:
+{customer_details}
+
+ACTIVE DEMO NAME: {demo_name}
+"""
+
+def fallback_node(state: GraphState) -> GraphState:
+    print(f"\nInvoking FALLBACK AGENT: \n")
+    
+    messages = state["messages"]
+    payload = state.get("task_payload") or {}
+    
+    # Extract context just like your other nodes
+    customer_details = state.get("customer_details") or payload.get("customer_details") or {}
+    demo_name = (state.get("demo_name") or payload.get("demo_name"))
+    
+    # Create the template
+    fallback_template = PromptTemplate(
+        template=fallback_prompt,
+        input_variables=["demo_name", "customer_details"]
+    )
+    
+    # Format the system message
+    system_msg_content = fallback_template.format(
+        demo_name=demo_name,
+        customer_details=str(customer_details)
+    )
+    
+    system_msg = SystemMessage(content=system_msg_content)
+    
+    # We pass the full history so the agent "hears" the confusing question
+    # We add a guiding instruction at the end to ensure it handles the fallback correctly
+    last_instruction = HumanMessage(
+        content=(
+            "The last message from the user was unclear or off-topic. "
+            "Respond naturally as the patient, expressing confusion and returning to the medical topic."
+        )
+    )
+    
+    # Invoke the LLM (No tools needed here)
+    response = agent_llm.invoke([system_msg] + messages + [last_instruction])
+    
+    # Update State
+    new_state = state.copy()
+    new_state["messages"] = messages + [response]
+    
+    return new_state
+
+
+
+from components.agents import fallback_node  # Import the new node
+
+# ... existing code ...
+
+# 1. Add the Node
+builder.add_node("agent_fallback", fallback_node)
+
+# 2. Update the Routing Logic
+# The Orchestrator needs to map "fallback" or "unknown" to this new node.
+def route_from_orchestrator(state: GraphState) -> str:
+    route = (state.get("task_route") or "general").lower()
+
+    if route == "call_greeting":
+        return "agent_call_greeting"
+    elif route == "verification":
+        return "agent_verification"
+    elif route == "symptoms_grievances":
+        return "agent_symptoms_grievances"
+    elif route == "medication_and_pain_management":
+        return "agent_medication_and_pain_management"
+    elif route == "services_and_assistance":
+        return "agent_services_and_assistance"
+    elif route == "call_closure":
+        return "agent_closing"
+    # --- NEW LOGIC START ---
+    elif route == "fallback" or route == "unknown":
+        return "agent_fallback"
+    # --- NEW LOGIC END ---
+    else:
+        # If we truly don't know, fallback is safer than greeting loop
+        return "agent_fallback" 
+
+# 3. Update Conditional Edges
+builder.add_conditional_edges(
+    "orchestrator",
+    route_from_orchestrator,
+    {
+        "agent_call_greeting": "agent_call_greeting",
+        "agent_verification": "agent_verification",
+        "agent_symptoms_grievances": "agent_symptoms_grievances",
+        "agent_medication_and_pain_management": "agent_medication_and_pain_management",
+        "agent_services_and_assistance": "agent_services_and_assistance",
+        "agent_closing": "agent_closing",
+        "agent_fallback": "agent_fallback",  # Add this key!
+    },
+)
+
+# 4. Add the Edge for Fallback
+# Since fallback has no tools, it goes straight to finalizer (then loops to orchestrator)
+builder.add_edge("agent_fallback", "finalizer")
+
+# ... rest of your code ...
+
+
+
+
+
 graph TD
     %% Entry Point
     START((START)) --> orchestrator
