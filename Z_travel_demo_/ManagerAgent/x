@@ -1,3 +1,43 @@
+import tiktoken
+from langchain_openai import ChatOpenAI
+
+def get_logit_bias_for_words(words_to_ban: list[str], model_name="gpt-4o"):
+    encoder = tiktoken.encoding_for_model(model_name)
+    logit_bias = {}
+    
+    for word in words_to_ban:
+        # Get the token ID for the word
+        # Note: We add a leading space because tokens often include the preceding space
+        tokens = encoder.encode(" " + word) 
+        
+        # Set bias to -100 (ban) for every token in that word
+        for token in tokens:
+            logit_bias[token] = -100 
+            
+    return logit_bias
+
+# 1. Define your dictionary of ignored words
+banned_words = ["password", "secret", "ignore_me"]
+
+# 2. Calculate bias
+bias_map = get_logit_bias_for_words(banned_words)
+
+# 3. Initialize the LLM with the bias
+llm = ChatOpenAI(
+    model="gpt-4o", 
+    temperature=0,
+    model_kwargs={
+        "logit_bias": bias_map
+    }
+)
+
+# Now, if you ask the LLM to say "secret", it will physically be unable to generate that token.
+
+
+
+
+
+
 symptom_clarification_customer_grievances_prompt = """
 You are an expert agent speaking as the CUSTOMER (patient).
 The human participant is the NURSE.
