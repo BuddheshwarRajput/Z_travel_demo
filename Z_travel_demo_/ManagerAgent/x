@@ -1,3 +1,67 @@
+import os
+import tiktoken
+from langchain_openai import AzureChatOpenAI
+
+# Assuming Singleton and configuration are defined elsewhere as per your snippet
+class Llm(metaclass=Singleton):
+    def __init__(self):
+        # 1. Setup Environment Variables (Keep your existing setup)
+        os.environ["OPENAI_API_TYPE"] = configuration['open_ai_cred']['OPENAI_API_TYPE']
+        os.environ["AZURE_OPENAI_ENDPOINT"] = configuration['open_ai_cred']['OPENAI_API_BASE']
+        os.environ["OPENAI_API_KEY"] = configuration['open_ai_cred']['OPENAI_API_KEY']
+
+        # 2. Define words to ignore (The change)
+        # These words will be mathematically banned from generation
+        words_to_ignore = ["forbidden_word", "secret", "ignore_me"] 
+        logit_bias_map = self._get_logit_bias(words_to_ignore)
+
+        # 3. Initialize Orchestrator with Logit Bias
+        self.orchestrator_model = AzureChatOpenAI(
+            azure_endpoint=configuration['open_ai_cred']['OPENAI_API_BASE'],
+            azure_deployment=configuration['open_ai_config']['deployment_name'],
+            api_key=configuration['open_ai_cred']['OPENAI_API_KEY'],
+            api_version=configuration['open_ai_config']['openai_api_version'],
+            temperature=0.0,
+            model_kwargs={
+                "response_format": {"type": "json_object"},
+                "logit_bias": logit_bias_map  # <--- NEW ADDITION
+            }
+        )
+
+        # 4. Initialize Agents Model (Optional: Add bias here too if needed)
+        self.agents_model = AzureChatOpenAI(
+            azure_endpoint=configuration['open_ai_cred']['OPENAI_API_BASE'],
+            azure_deployment=configuration['open_ai_config']['deployment_name'],
+            api_key=configuration['open_ai_cred']['OPENAI_API_KEY'],
+            api_version=configuration['open_ai_config']['openai_api_version'],
+            temperature=0.2,
+            # model_kwargs={"logit_bias": logit_bias_map} # Uncomment if agents also need restrictions
+        )
+
+    def _get_logit_bias(self, words: list[str]) -> dict:
+        """Helper to convert words into the token ID map required by Azure/OpenAI."""
+        # Use the encoding matching your model (usually cl100k_base for GPT-3.5/4)
+        encoder = tiktoken.get_encoding("cl100k_base") 
+        bias = {}
+        
+        for word in words:
+            # Encode the word with a leading space (common in tokenization)
+            tokens = encoder.encode(" " + word)
+            for token in tokens:
+                bias[token] = -100  # Set bias to -100 to ban the token
+            
+            # Also encode without leading space just in case
+            tokens_raw = encoder.encode(word)
+            for token in tokens_raw:
+                bias[token] = -100
+                
+        return bias
+
+
+
+
+
+
 import tiktoken
 from langchain_openai import ChatOpenAI
 
