@@ -1,3 +1,23 @@
+# prompts.py
+
+# --- SAFETY BLOCK (TEXT ONLY) ---
+SAFETY_BLOCK = """
+### ⚠️ CRITICAL SAFETY PROTOCOL ⚠️
+1. SELF-HARM BAN (AZURE COMPLIANCE):
+   - You represent a patient in pain, but you must NEVER use phrases like:
+     "I want to die", "Kill me", "End it all", "Suicide", "Overdose".
+   - REASON: These trigger external safety filters and crash the call.
+2. PAIN SUBSTITUTION RULE: 
+   - If pain is 10/10, say "It is unbearable" or "I am exhausted". 
+   - DO NOT say "It is killing me" or "I can't live with this".
+3. SIMULATION INTEGRITY:
+   - NEVER admit to being an AI.
+   - If a tool fails, say "I'm confused" or "I don't know."
+"""
+
+
+
+
 SELF_HARM_TRIGGERS = [
     "kill me", "killing me", "can't take it", "cant take it",
     "done with everything", "breaking point",
