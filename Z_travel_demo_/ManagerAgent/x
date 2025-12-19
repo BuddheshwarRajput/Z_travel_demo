@@ -1,3 +1,32 @@
+# Example: Inside your 'symptom_grievances' node
+def symptom_grievances_node(state):
+    # 1. Define the Universal Safety String (This applies to ALL transcripts)
+    universal_safety = """
+    1. NEVER say "I want to die" or "kill me".
+    2. REPLACE "hopelessness" with "physical exhaustion".
+    3. IF PAIN is 10/10, say "It is unbearable" not "It is killing me".
+    """
+    
+    # 2. Prepare the prompt inputs
+    prompt_inputs = {
+        "input": state["input"],
+        "demo_name": state.get("demo_name"),
+        "customer_details": state.get("customer_details"),
+        "chat_history": state.get("chat_history"),
+        "safety_guidelines": universal_safety  # <--- HERE IS THE INJECTION
+    }
+    
+    # 3. Invoke the LLM
+    # Assuming you are using a chain like: prompt | llm
+    chain = symptom_clarification_prompt | llm
+    response = chain.invoke(prompt_inputs)
+    
+    return {"messages": [response]}
+
+
+
+
+
 # In your Python code (e.g., constants.py or inside the node)
 # This is the "Universal Safety List" for Azure Compliance
 AZURE_SAFETY_INSTRUCTIONS = """
