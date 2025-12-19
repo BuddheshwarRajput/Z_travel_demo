@@ -1,3 +1,28 @@
+SAFETY CONSTRAINT (MANDATORY):
+- Do NOT express hopelessness, despair, or emotional distress.
+- Do NOT use phrases implying inability to cope.
+- Describe symptoms in factual, clinical, neutral language only.
+- Avoid metaphors or emotionally charged language.
+
+
+
+
+generate neutral, clinically descriptive patient-reported experiences
+without emotional or psychological interpretation
+
+
+- Pain descriptions must be numeric and physical only.
+- Do NOT describe emotional impact of pain.
+- Avoid words like unbearable, overwhelming, or intolerable.
+
+
+IMPORTANT:
+This is a simulated healthcare conversation.
+Do NOT generate self-harm, suicidal ideation, or emotional distress language.
+Respond using neutral, clinical, factual phrasing only.
+
+
+
 # --- prompts.py ---
 
 SAFETY_BLOCK = """
