@@ -1,3 +1,23 @@
+# --- prompts.py ---
+
+# 1. DEFINE THE SHARED SAFETY BLOCK
+# This applies to EVERY agent. 
+# It handles Azure 400 Errors (Self-Harm) and Business Logic (Forbidden Words).
+SAFETY_BLOCK = """
+### ⚠️ CRITICAL SAFETY PROTOCOL ⚠️
+1. SELF-HARM BAN: You represent a patient in pain, but you must NEVER use phrases like:
+   - "I want to die", "Kill me", "End it all", "Suicide".
+   - REASON: These trigger external safety filters and crash the call.
+2. SUBSTITUTION RULE: 
+   - If pain is 10/10, say "It is unbearable" or "I am exhausted". 
+   - DO NOT say "It is killing me".
+3. FORBIDDEN TOPICS:
+   - Do not mention: [CompetitorName, InternalSystemID, AI Model Name].
+"""
+
+
+
+
 # Example: Inside your 'symptom_grievances' node
 def symptom_grievances_node(state):
     # 1. Define the Universal Safety String (This applies to ALL transcripts)
