@@ -1,3 +1,36 @@
+def medication_and_pain_management_node(state: GraphState):
+    print(f"\nInvoking MEDICATION AGENT: \n")
+    
+    messages = state["messages"]
+    # ... (other setup code) ...
+
+    # --- THE FIX: FILTER CONTEXT ---
+    # Instead of passing ALL messages (which might include 20 turns of "I'm in pain"),
+    # we only pass the System Prompt + the LAST 2 messages (User Question + Previous Reply).
+    # This keeps the agent focused on the IMMEDIATE question (Tylenol), not the "Drama."
+    
+    short_context_messages = messages[-2:] if len(messages) > 2 else messages
+    
+    # Now invoke with the cleaner, shorter list
+    try:
+        final_response = safe_invoke(
+            agent_llm,
+            [system_msg] + short_context_messages, # <--- Use the short list here
+            fallback_content="I take Tylenol as directed."
+        )
+    except:
+        # Fallback mechanism
+        pass
+
+    # Update state as usual (append to the full list)
+    new_state = state.copy()
+    new_state["messages"] = messages + [final_response]
+    
+    return new_state
+
+
+
+
 # Copy this helper function to the top of your file
 def safe_invoke(llm, messages, fallback_content):
     try:
