@@ -1,3 +1,34 @@
+Domain,demo_name,parameter_id,parameter_name,subparameter_name,std_parameter_name,std_parameter_desc,weightage,std subparameter_example
+Home Security,ADT Inbound,CS1,Conversation starter,CS1,CS1,Agent opened with the standard company branding and a professional greeting.,0.50,"""Thank you for calling ADT Home Security. This is Sarah. How may I assist you today?"""
+Home Security,ADT Inbound,CS2,Conversation starter,CS2,CS2,Agent used a warm and enthusiastic tone to set a welcoming atmosphere immediately.,0.50,"Agent sounded energetic and helpful, saying ""Absolutely! I'd be happy to help."""
+Home Security,ADT Inbound,POL1,Politeness_Courtesy,POL1,POL1,Agent consistently used polite markers like please thank you and may I throughout the interaction.,0.25,"""May I have your full name, please?"" / ""Thank you, John."""
+Home Security,ADT Inbound,POL2,Politeness_Courtesy,POL2,POL2,Agent acknowledged customer inputs without interrupting (Active Listening).,0.25,"""Understood. And do you have any pets at home?"""
+Home Security,ADT Inbound,POL3,Politeness_Courtesy,POL3,POL3,Agent avoided slang and maintained professional phrasing.,0.25,"Used ""Excellent"" or ""Perfect"" instead of casual fillers."
+Home Security,ADT Inbound,POL4,Politeness_Courtesy,POL4,POL4,Agent expressed gratitude for the customer's information or patience.,0.25,"""Thank you. Based on what you've shared..."""
+Home Security,ADT Inbound,PER1,Personalization,PER1,PER1,Agent used the customer's name to build rapport.,0.50,"""Thank you, John."""
+Home Security,ADT Inbound,PER2,Personalization,PER2,PER2,Agent recognized specific customer context (e.g. moving new home) and commented on it.,0.50,"""Congratulations on the new home."""
+Home Security,ADT Inbound,POC1,Purpose of the call,POC1,POC1,Agent quickly identified if the caller needed sales support or billing assistance.,1.00,"""Are you calling about a house or an apartment?"""
+Home Security,ADT Inbound,NA1,Needs Assessment,NA1,NA1,Agent asked critical qualifying questions regarding property type and entry points.,0.33,"""How many main entry points do you have, such as doors or a garage?"""
+Home Security,ADT Inbound,NA2,Needs Assessment,NA2,NA2,Agent inquired about specific lifestyle factors like pets or family size.,0.33,"""Do you have any pets at home?"""
+Home Security,ADT Inbound,NA3,Needs Assessment,NA3,NA3,Agent asked about specific hardware interest (Cameras Automation etc).,0.34,"""Are you interested in cameras as well, like indoor or outdoor cameras?"""
+Home Security,ADT Inbound,REC1,Solution Recommendation,REC1,REC1,Agent recommended specific equipment based directly on the answers given in discovery.,0.50,"""I'd recommend a system that includes... pet-friendly motion sensors... and indoor and outdoor cameras."""
+Home Security,ADT Inbound,REC2,Solution Recommendation,REC2,REC2,Agent highlighted the benefits of the service (monitoring app access) rather than just hardware.,0.50,"""...and 24/7 professional monitoring with mobile app access."""
+Home Security,ADT Inbound,OBJ1,Objection Handling,OBJ1,OBJ1,Agent successfully pivoted to the consultation when faced with pricing uncertainty.,1.00,"""The best way to do that is with a free, no-obligation home security consultation... Would you like to schedule that?"""
+Home Security,ADT Inbound,APP1,Appointment Setting,APP1,APP1,Agent correctly captured Name Address and Phone Number.,0.33,"""What's the installation address?"" / ""And what's the best phone number..."""
+Home Security,ADT Inbound,APP2,Appointment Setting,APP2,APP2,Agent offered specific time slots or choices to facilitate easy booking.,0.33,"""I have availability this Thursday between 2 PM and 4 PM, or Saturday... Which works better?"""
+Home Security,ADT Inbound,APP3,Appointment Setting,APP3,APP3,Agent clearly repeated the agreed-upon date and time to confirm.,0.34,"""Excellent. I've scheduled your free home security consultation for Thursday between 2 and 4 PM."""
+Home Security,ADT Inbound,COM1,Compliance,COM1,COM1,Agent explicitly stated that the consultation is free and carries no obligation.,0.50,"""Just to confirm, this visit is completely free and there's no obligation to purchase."""
+Home Security,ADT Inbound,COM2,Compliance,COM2,COM2,Agent informed the customer that the call is being recorded for quality purposes.,0.50,"""This call may be recorded for quality and training purposes."" (Note: Must be present for Pass)"
+Home Security,ADT Inbound,CP1,Clarity and Pace,CP1,CP1,Agent guided the call logically from discovery to solution to closing without confusion.,1.00,"Conversation flowed smoothly: Intro -> Needs -> Recommendation -> Price Objection -> Appointment -> Close."
+Home Security,ADT Inbound,PC1,Positive_Closure,PC1,PC1,Agent confirmed next steps (email confirmation etc).,0.50,"""You'll receive a confirmation message shortly with the appointment details."""
+Home Security,ADT Inbound,PC2,Positive_Closure,PC2,PC2,Agent closed with a professional sign-off and brand reinforcement.,0.50,"""Thank you for calling ADT, John. We look forward to helping protect your home. Have a great day."""
+
+
+
+
+
+
+
 Domain,Process Name,Parameter ID,Parameter Name,Subparameter ID,Subparameter Name,Generic Description,Sub_Weightage,Ideal Example (From Transcript)
 Home Security,Inbound Sales,CS,Conversation Starter,CS1,Branding and Greeting,Agent must open with the company name, their name, and an offer to assist.,0.50,"""Thank you for calling ADT Home Security. This is Sarah. How may I assist you today?"""
 Home Security,Inbound Sales,CS,Conversation Starter,CS2,Enthusiasm,Agent must convey energy and willingness to help immediately after the customer speaks.,0.50,"""Absolutely! I'd be happy to help."""
