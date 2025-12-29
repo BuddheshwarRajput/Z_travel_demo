@@ -1,3 +1,54 @@
+Domain,Process Name,Parameter ID,Parameter Name,Subparameter ID,Subparameter Name,Generic Description,Sub_Weightage,Ideal Example (From Transcript)
+Home Security,Inbound Sales,CS,Conversation Starter,CS1,Branding and Greeting,Agent must open with the company name, their name, and an offer to assist.,0.50,"""Thank you for calling ADT Home Security. This is Sarah. How may I assist you today?"""
+Home Security,Inbound Sales,CS,Conversation Starter,CS2,Enthusiasm,Agent must convey energy and willingness to help immediately after the customer speaks.,0.50,"""Absolutely! I'd be happy to help."""
+Home Security,Inbound Sales,POC,Purpose of the Call,POC1,Identify Call Type,Agent must immediately determine if the call is for Sales, Support, or Billing.,1.00,"""Are you calling about a house or an apartment?"""
+Home Security,Inbound Sales,POL,Politeness & Courtesy,POL1,Manners,Agent must consistently use 'Please', 'Thank You', and 'May I'.,0.33,"""May I have your full name, please?"""
+Home Security,Inbound Sales,POL,Politeness & Courtesy,POL2,Active Listening,Agent must acknowledge customer answers without interrupting.,0.33,"""Understood. And do you have any pets at home?"""
+Home Security,Inbound Sales,POL,Politeness & Courtesy,POL3,Professional Tone,Agent must avoid slang and maintain a helpful, professional demeanor.,0.34,"Used ""Excellent"" or ""Perfect"" to acknowledge inputs."
+Home Security,Inbound Sales,PER,Personalization,PER1,Name Usage,Agent must use the customer's name at least once to build rapport.,0.50,"""Thank you, John."""
+Home Security,Inbound Sales,PER,Personalization,PER2,Contextual Rapport,Agent must acknowledge specific details shared by the customer (e.g., new move, family, pets).,0.50,"""Congratulations on the new home."""
+Home Security,Inbound Sales,NA,Needs Assessment,NA1,Property Profiling,Agent must ask about the property type and number of entry points.,0.33,"""How many main entry points do you have, such as doors or a garage?"""
+Home Security,Inbound Sales,NA,Needs Assessment,NA2,Risk Factors,Agent must ask about factors that influence sensor choice (Pets, Kids, Layout).,0.33,"""Do you have any pets at home?"""
+Home Security,Inbound Sales,NA,Needs Assessment,NA3,Interest Check,Agent must check for interest in add-ons like cameras or automation.,0.34,"""Are you interested in cameras as well, like indoor or outdoor cameras?"""
+Home Security,Inbound Sales,REC,Solution Recommendation,REC1,Tailored Pitch,Agent must recommend a package that explicitly solves the needs found in discovery.,0.50,"""Based on what you've shared, I'd recommend a system that includes... pet-friendly motion sensors..."""
+Home Security,Inbound Sales,REC,Solution Recommendation,REC2,Value Adds,Agent must highlight service benefits (Monitoring, App) not just hardware.,0.50,"""...and 24/7 professional monitoring with mobile app access."""
+Home Security,Inbound Sales,OBJ,Objection Handling,OBJ1,Acknowledge and Pivot,Agent must address the objection (e.g., price) and pivot to a value-based solution (e.g., free consult).,1.00,"""The best way to do that is with a free, no-obligation home security consultation..."""
+Home Security,Inbound Sales,APP,Appointment Setting,APP1,Data Capture,Agent must accurately capture Name, Address, and Phone Number.,0.33,"""What's the installation address?"""
+Home Security,Inbound Sales,APP,Appointment Setting,APP2,Choice of Yes,Agent should offer specific time slots or choices to facilitate booking.,0.33,"""I have availability this Thursday between 2 PM and 4 PM... Which works better?"""
+Home Security,Inbound Sales,APP,Appointment Setting,APP3,Confirmation,Agent must repeat the agreed date and time to ensure accuracy.,0.34,"""Excellent. I've scheduled your free home security consultation for Thursday..."""
+Home Security,Inbound Sales,COM,Compliance & Disclaimers,COM1,No Obligation,Agent must clarify if the appointment/quote carries any financial obligation.,0.50,"""Just to confirm, this visit is completely free and there's no obligation to purchase."""
+Home Security,Inbound Sales,COM,Compliance & Disclaimers,COM2,Recording Disclosure,Agent must state the call is being recorded (Mandatory Compliance).,0.50,"""This call may be recorded for quality purposes."" (Critical Fail if missing)"
+Home Security,Inbound Sales,CP,Clarity and Pace,CP1,Logical Flow,Agent must guide the call logically from discovery to solution to closing.,1.00,"Conversation moved smoothly from ""How many doors?"" to ""I recommend X"" to ""Let's book a time."""
+Home Security,Inbound Sales,PCL,Positive Closure,PCL1,Next Steps,Agent must confirm what the customer should expect next (email, call, etc.).,0.50,"""You'll receive a confirmation message shortly with the appointment details."""
+Home Security,Inbound Sales,PCL,Positive Closure,PCL2,Professional Goodbye,Agent must close with a polite sign-off and brand reinforcement.,0.50,"""Thank you for calling ADT... We look forward to helping protect your home."""
+
+
+
+
+
+
+
+Domain,Process Name,Parameter ID,Parameter Name,Description,Weightage
+Home Security,Inbound Sales,CS,Conversation Starter,Opening the call professionally and establishing the brand.,0.05
+Home Security,Inbound Sales,POC,Purpose of the Call,Identifying the customer's intent and reason for calling.,0.05
+Home Security,Inbound Sales,POL,Politeness & Courtesy,Using professional manners and active listening throughout the call.,0.10
+Home Security,Inbound Sales,PER,Personalization,Building rapport using names and acknowledging personal details.,0.05
+Home Security,Inbound Sales,NA,Needs Assessment,Asking qualifying questions to understand the home and security requirements.,0.20
+Home Security,Inbound Sales,REC,Solution Recommendation,Pitching the correct equipment and services based on discovery.,0.15
+Home Security,Inbound Sales,OBJ,Objection Handling,Addressing customer concerns (price, commitment) effectively to move the sale forward.,0.10
+Home Security,Inbound Sales,APP,Appointment Setting,Securing the consultation or installation date (The Close).,0.15
+Home Security,Inbound Sales,COM,Compliance & Disclaimers,Adhering to legal requirements regarding recording and obligations.,0.05
+Home Security,Inbound Sales,CP,Clarity and Pace,Speaking clearly and guiding the call flow logically.,0.05
+Home Security,Inbound Sales,PCL,Positive Closure,Ending the interaction professionally and setting expectations.,0.05
+
+
+
+
+
+
+
+
+
 You are a smart call analyzer tasked with reviewing a call transcript and customer details to generate a clear and focused summary of the situation or topic that the customer and agent are discussing. Your output will guide the customer on how to handle the call based on the provided context and the empathy level shown by the Agent, tailored to the customer's persona.
 
 Call Process Context
