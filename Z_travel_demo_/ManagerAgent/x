@@ -1,0 +1,36 @@
+# agent_util.py
+from google.adk.agents import LlmAgent
+from google.adk.models.vertex_ai import VertexAiModel
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+import prompts  # Importing your prompts file
+
+def create_agent_runner():
+    # 1. Initialize Model
+    model = VertexAiModel("gemini-1.5-pro")
+
+    # 2. Define Sub-Agents (Using imported prompts)
+    call_initiation = LlmAgent(name="call_initiation", model=model, instruction=prompts.INITIATION_INSTRUCTION)
+    verification = LlmAgent(name="verification", model=model, instruction=prompts.VERIFICATION_INSTRUCTION)
+    medication = LlmAgent(name="medication", model=model, instruction=prompts.MEDICATION_INSTRUCTION)
+    symptom = LlmAgent(name="symptom", model=model, instruction=prompts.SYMPTOM_INSTRUCTION)
+    service = LlmAgent(name="service", model=model, instruction=prompts.SERVICE_INSTRUCTION)
+    closure = LlmAgent(name="closure", model=model, instruction=prompts.CLOSURE_INSTRUCTION)
+    fallback = LlmAgent(name="fallback", model=model, instruction=prompts.FALLBACK_INSTRUCTION)
+
+    # 3. Define Root Agent
+    root_agent = LlmAgent(
+        name="root_router",
+        model=model,
+        instruction=prompts.ROOT_INSTRUCTION
+    )
+
+    # 4. Create and Return Runner
+    # This object encapsulates your entire 6-agent system
+    runner = Runner(
+        agent=root_agent,
+        sub_agents=[call_initiation, verification, medication, symptom, service, closure, fallback],
+        session_service=InMemorySessionService()
+    )
+    
+    return runner
