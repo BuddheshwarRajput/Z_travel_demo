@@ -9,6 +9,173 @@ from langchain_core.output_parsers import JsonOutputParser,StrOutputParser
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
 
+# <--- LANGFUSE IMPORT: Import the main client, not the handler directly
+from langfuse import Langfuse
+
+# Set environment variables for OpenAI API
+os.environ["OPENAI_API_TYPE"] = configuration['open_ai_cred']['OPENAI_API_TYPE']
+os.environ["AZURE_OPENAI_ENDPOINT"] = configuration['open_ai_cred']['OPENAI_API_BASE']
+os.environ["OPENAI_API_KEY"] = configuration['open_ai_cred']['OPENAI_API_KEY']
+
+# Initialize the LLM model
+llm = AzureChatOpenAI(**{'deployment_name': configuration['open_ai_config']['deployment_name'], 
+                         'openai_api_version': configuration['open_ai_config']['openai_api_version']}, 
+                      temperature=0.1)
+
+# Initialize Langfuse Client (It reads keys from your ENV or config automatically)
+langfuse = Langfuse() 
+
+class recommend_output_format(BaseModel):
+    Recommendation: list[str] = Field(description="returns a list of recommendations for improvement from the conversation between agent and customer ")
+
+
+class Evaluator:
+    def __init__(self):
+        self.history = ""
+
+    def calculate_timestamp_difference_tool(self, messages):
+        # (Your existing logic remains unchanged)
+        df = pd.DataFrame(messages)
+        if df.empty or 'timestamp' not in df.columns:
+            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time...','description': 'Data unavailable','flag': 1}]}]
+
+        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S:%f')
+        df['timestamp_difference'] = df['timestamp'].diff().dt.total_seconds() * 1000
+        df['more_than_20s'] = df['timestamp_difference'] > 20000
+        
+        agent_msgs = df[df['messenger']=="Agent"]
+        if not agent_msgs.empty and True in set(agent_msgs['more_than_20s']):
+            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did exceed silent time of 20 seconds...','flag': 0}]}]
+        else:
+            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did not exceed silent time of 20 seconds...','flag': 1}]}]
+    
+    def load_parameters(self, sub_param_df):
+        # (Your existing logic remains unchanged)
+        param_descriptions = {}
+        for _, row in sub_param_df.iterrows():
+            parameter = row['parameter_name']
+            description = row['std_parameter_desc']
+            if parameter not in param_descriptions:
+                param_descriptions[parameter] = []
+            param_descriptions[parameter].append(description)
+        return param_descriptions
+
+    def recommendation_generator(self, input_json, callbacks=None):
+        recommendation_template="""
+        System Instructions:
+        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer. You will be given a JSON object that includes param_name with description and flag. The description explains the reason for the flag value (0 or 1). A flag of 0 means the param_name is not present in the conversation, while a flag of 1 means the param_name is present in the conversation.
+        
+        Instructions:
+        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
+        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
+        3.Make sure it DO NOT exceed 15 words
+        
+        input_json:
+        {input_json}
+        
+        format_instructions:
+        {format_instructions}
+        """
+        recommendation_template_without_format="""
+        System Instructions:
+        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer. You will be given a JSON object that includes param_name with description and flag. The description explains the reason for the flag value (0 or 1). A flag of 0 means the param_name is not present in the conversation, while a flag of 1 means the param_name is present in the conversation.
+        
+        Instructions:
+        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
+        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
+        3.Make sure it DO NOT exceed 15 words
+        4.Only give recommendations do not output the parameter name as title or heading.
+        
+        input_json:
+        {input_json}
+        """
+        
+        parser = JsonOutputParser(pydantic_object=recommend_output_format)
+        
+        prompt_recommendation = PromptTemplate(
+            input_variables=["input_json"],
+            partial_variables={"format_instructions": parser.get_format_instructions()},
+            template=recommendation_template)
+            
+        prompt_recommendation_without_format = PromptTemplate(
+            input_variables=["input_json"],
+            template=recommendation_template_without_format)
+        
+        llm_chain_recommendation = prompt_recommendation | llm | parser
+        llm_chain_recommendation_without_format = prompt_recommendation_without_format | llm | StrOutputParser()
+        
+        # <--- TRACING: Pass callbacks config
+        config = {"callbacks": callbacks} if callbacks else {}
+        
+        gen_recommendations = llm_chain_recommendation.invoke({"input_json":input_json}, config=config)
+        print("gen_recommendations---------", gen_recommendations)
+        
+        if "Recommendation" in gen_recommendations.keys():
+            print("recommendation found")
+            return gen_recommendations['Recommendation']
+        else:
+            gen_recommendations = llm_chain_recommendation_without_format.invoke({"input_json":input_json}, config=config)
+            try:
+                gen_recommendations=[line.split(". ",1)[1] for line in gen_recommendations.splitlines() if line.strip()]
+            except:
+                gen_recommendations=[line for line in gen_recommendations.splitlines() if line.strip()]
+            return gen_recommendations
+
+    def report_generator(self, chains, conversation_history, conversation_history_list, param_descriptions, session_id=None, demo_name=None, domain=None):        
+        """
+        Generate a report with recommendations based on conversation history and dynamic parameters
+        """
+        
+        # <--- NEW FIX: Create Trace First, Get Handler Second
+        # This bypasses the constructor error because 'trace' knows how to handle session_id
+        trace = langfuse.trace(
+            name="evaluation_run",
+            session_id=session_id,
+            metadata={
+                "demo_name": demo_name,
+                "domain": domain
+            },
+            tags=[demo_name, domain, "evaluation"]
+        )
+        
+        # Get the handler specifically for LangChain
+        langfuse_handler = trace.get_langchain_handler()
+        
+        # Calculate tool output (Not traced by LangChain, but that's fine)
+        tool_output = self.calculate_timestamp_difference_tool(conversation_history_list)
+        
+        map_chain = RunnableParallel(**chains)
+        
+        # <--- PASS HANDLER to invoke
+        response = map_chain.invoke(
+            {"conversation_history": conversation_history, "tool_output": tool_output},
+            config={"callbacks": [langfuse_handler]}
+        )
+        
+        # <--- PASS HANDLER to recommendation
+        response['Recommendation'] = self.recommendation_generator(response, callbacks=[langfuse_handler])
+        
+        # Ensure everything is sent
+        langfuse.flush()
+        
+        return response
+
+
+
+
+
+
+import os
+import pandas as pd
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_openai import AzureChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableParallel
+from config import configuration
+from langchain_core.output_parsers import JsonOutputParser,StrOutputParser
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any
+
 # <--- LANGFUSE IMPORT
 from langfuse.callback import CallbackHandler 
 
