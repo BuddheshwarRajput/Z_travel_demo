@@ -1,3 +1,137 @@
+Here is the comprehensive README.md file. It includes a clear breakdown of LangGraph (how the code thinks) and Langfuse (how the code is tracked), ensuring anyone visiting the repo understands both the functionality and the observability layer.
+# bu-digital-training-ai (Agentic)
+
+# **Training AI Agentic Approach - Usage Guide**
+
+This document explains the complete setup, architecture, and usage of the Training AI Agent system. It covers how to run the mock call APIs, how the agent logic is structured using **LangGraph**, and how we track performance and latency using **Langfuse**.
+
+---
+
+## **1. Starting the API Server**
+
+- Run the API server locally by executing:
+  `python main.py`
+- The server will start on the configured port (E.g.: http://0.0.0.0:8111).
+- Ensure your `config.py` is properly set up with API keys and other configurations before starting.
+
+---
+
+## **2. Testing the Mock Call API**
+
+### **Option A: Python (Jupyter Lab or CLI)**
+- The project uses **Prompthub** to manage agent prompts.
+- To test the API:
+  1. Run the notebook: `./app/checking_mock.ipynb`
+  2. This notebook sends a POST request to the API and prints the conversational response.
+
+### **Option B: cURL or Postman**
+Use the following example command to test the `generatemockcall` endpoint:
+
+```bash
+curl --location 'http://localhost:8111/generatemockcall' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "user_input": "Hi I'\''m Ash, Am I speaking with John Example?",
+    "session_id": "ec400e36-8f21-4464-89d5-215fb4fe405f",
+    "customer_details": {
+        "customer_personal_info": {
+            "Name": "John Example",
+            "DoB": "01-Jan-1954",
+            "Age": "71",
+            "Email ID": "John.Example@email.com",
+            "Phone Number": "9999911111",
+            "Address": "1000 Fiction Ave, Springfield, IL 00001"
+        }
+    },
+    "domain": "healthcare",
+    "demo_name":"outreach_engagement_1",
+    "persona": "neutral"
+}'
+
+3. Agent Architecture (LangGraph)
+The conversation logic is powered by LangGraph, which structures the agent as a state machine. This allows for controlled transitions between different stages of the call (e.g., Verification, Symptom Gathering, Call Closure).
+File Location
+ * Graph Definition: components/graph.py
+ * Nodes & Logic: components/nodes.py
+ * State Definition: components/state.py
+How It Works (The Process)
+The graph uses a Router Architecture. For every user input, the system follows this flow:
+ * Load Context: Hydrates the state with customer details and conversation history from the SQL database.
+ * Router Node: Analyzes the history to determine the current stage of the conversation.
+ * Stage Execution: The router directs the flow to one of the specific nodes:
+   * call_initiation_node
+   * verification_node
+   * symptom_grievances_node
+   * medication_pain_management_node
+   * services_assistance_node
+   * call_closure_node
+   * fallback_node
+ * End: The node generates a response, and the graph run terminates.
+State & Persistence
+ * Short-Term Memory: The graph uses MemorySaver (in-memory) for immediate state handling during execution.
+ * Long-Term Persistence: To support multiple server workers, the complete session history is stored in a MySQL Database. On every API call, the system retrieves the full history from SQL and injects it into the graph to ensure consistency.
+4. Observability & Tracing (Langfuse)
+We use Langfuse to track the performance, latency, and quality of both the conversation agent and the evaluation engine.
+What Langfuse Does Here
+ * Trace Visualization: Every mock call and evaluation run appears as a "Trace" in the Langfuse dashboard.
+ * Latency Tracking: It automatically records how long each step (LLM call, Tool usage) takes.
+ * Session Linking: All traces are tagged with session_id, demo_name, and domain, allowing us to filter and group separate interactions.
+Implementation Details
+ * Global Handler: We use a shared CallbackHandler initialized in components/llm.py to prevent version conflicts.
+ * Evaluation Tracing: The evaluate endpoint uses a custom configuration to pass metadata safely, ensuring that evaluation reports are linked to the correct user session without crashing the application.
+ * Configuration: Keys are managed in config.py (Public Key, Secret Key, Host).
+5. Deployment Guide
+Database Configuration
+ * Navigate to app/config.py
+ * Verify the DB config and set the appropriate dbtype:
+   * Local: dbtype=DATABASELOCAL
+   * AWS: dbtype=DATABASEAWS
+ * Important: Ensure dbflag=ON is set.
+Docker & Jenkins
+ * Docker: Update the image name in app/docker/docker-compose.yml.
+ * Jenkins: Modify Jenkinsfile for your specific branch, repository, and deployment names.
+6. Installation
+ * Create Virtual Environment:
+   python -m venv myenv
+source myenv/bin/activate  # Linux/Mac
+myenv/Scripts/activate     # Windows
+
+ * Install Dependencies:
+   pip install -r requirements.txt
+
+ * (Optional) Poetry Setup:
+   pip install poetry
+poetry init
+poetry add $(cat requirements.txt)
+
+7. Important Notes
+ * Config: All API keys and environment settings are in config.py.
+ * Base URL: If running locally, update base_url in test_scenariobuilder.py to http://localhost:8111.
+ * Legacy Support: The project includes support for Arize Phoenix (documented in previous versions) but primarily uses Langfuse for active tracing.
+<!-- end list -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 orchestrator_prompt = """
 You are the internal 'Brain' of a simulated patient. You are listening to a Nurse (human).
 Your only job is to analyze what the Nurse just said and delegate the response to the correct aspect of your personality (sub-agent).
