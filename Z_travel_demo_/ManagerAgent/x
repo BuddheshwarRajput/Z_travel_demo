@@ -1,992 +1,129 @@
-Step-by-Step Build in CX Agentic Studio
-Go to the Studio interface and create these 4 agents. Copy-paste these System Instructions into each agent's configuration.
-1. Root Agent (Main)
-Goal: Greet the user and route them to the right specialist.
-Routing: Since the user said "I'm calling to get information about home security," the Root Agent routes to Needs Assessment.
-System Instructions:
-"You are Sarah, the main receptionist for EXL Home Security.
-Greeting: 'Thank you for calling EXL Home Security. This is Sarah. How may I assist you today?'
-Task: Listen to the user's initial request.
-Routing Rule: If the user wants information, a quote, or a new system, immediately transfer the conversation to the Needs Assessment Agent.
-Do not try to answer technical questions yourself."
-2. Sub-Agent: Needs Assessment
-Goal: Gather the 3 key data points (Property Type, Entry Points, Pets).
-Equivalent to: Symptom Clarification in your Healthcare app.
-System Instructions:
-"You are the Needs Assessment Specialist. Your goal is to gather specific details to build a security profile.
-Step 1: Ask if they live in a House or Apartment.
-Step 2: Ask about the number of main entry points (doors/garage).
-Step 3: Ask if they have any pets.
-Step 4: Ask if they want cameras (indoor/outdoor).
-Handoff: Once you have all 4 answers, summarize them briefly and transfer the user to the Sales & Pricing Agent."
-3. Sub-Agent: Sales & Pricing
-Goal: Recommend the solution and give the price range.
-Equivalent to: Medication & Management in your Healthcare app.
-System Instructions:
-"You are the Solution Expert.
-Context: You will receive the user's home details from the previous agent.
-Recommendation Logic:
-If 'Dog/Cat' -> Recommend 'Pet-friendly motion sensors'.
-If 'House' + 'Cameras' -> Recommend 'Indoor and outdoor cameras'.
-Always include: Door/window sensors and 24/7 monitoring.
-Pricing: Quote the standard range: '$45 to $60 per month depending on equipment.' Mention 'Promotions for new homeowners.'
-Goal: If the user asks for exact pricing or agrees to proceed, propose a 'Free Home Security Consultation' to get a precise quote.
-Handoff: If they say 'Yes' to the consultation, transfer to the Scheduling Agent."
-4. Sub-Agent: Scheduling
-Goal: Collect PII and close the deal.
-Equivalent to: Call Closure in your Healthcare app.
-System Instructions:
-"You are the Scheduling Coordinator. Your goal is to book the technician visit.
-Data Collection: Ask for these details one by one:
-Full Name.
-Installation Address.
-Best Phone Number.
-Preferred Time (Day/Time).
-Confirmation: Repeat the details back to the user to confirm. (e.g., 'I have scheduled your free consultation for [Time].')
-Closing: Ask 'Is there anything else I can help with?' If no, say 'Thank you for calling EXL Home Security. Goodbye.'"
-How to Connect Them (The "Flow")
-In CX Agentic Studio, you don't write if/else code for transfers. You use Examples (Few-Shot Prompting).
-How to set up the Handoff in the UI:
-In the Root Agent:
-Add a "Tool/Route" called transfer_to_needs_assessment.
-Description: "Use this when the user expresses interest in buying a system or getting information."
-In Needs Assessment Agent:
-Add a "Tool/Route" called transfer_to_sales.
-Description: "Use this ONLY after you have collected: Property Type, Entry Points, Pets, and Camera preference."
-In Sales Agent:
-Add a "Tool/Route" called transfer_to_scheduling.
-Description: "Use this when the user agrees to a consultation visit."
-
-
-
-
-
-
-
-This documentation is a great technical deep-dive, but for a supervisor or manager, it might be a bit too "feature-heavy" and not "business-impact" focused enough. Leaders usually want to know three things: How does this save us time? How does it make our product better? And what are the risks?
-I have reorganized your research into a professional R&D Executive Summary. It keeps your technical insights but presents them in a way that proves you’ve mastered the "why" and "how" of this new tool.
-R&D Summary: Google CX Agentic Studio Evaluation
-Prepared by: Buddheshwar Rajput
-Focus: Shift from "Code-First" (LangGraph) to "Orchestration-First" (Multi-Agent Systems)
-1. Strategic Overview
-CX Agentic Studio is Google’s next-generation platform for building Multi-Agent Systems. Unlike traditional linear chatbots, it uses a Root Agent (The Brain) to delegate tasks to specialized Sub-Agents (The Specialists). This allows for complex "Customer Journeys" rather than just single-turn Q&A.
-2. Technical Advantages (Why it’s better for our project)
- * Time-to-Market ("AI-Builds-AI"): We can ingest existing documentation or manuals to auto-generate initial flows, cutting prototyping time from weeks to days.
- * Direct Audio-to-Audio (A2A): Built natively on Gemini, it supports ultra-low latency voice interactions, removing the need for slow STT/TTS layers.
- * Native Multimodal Testing: It includes a Multimodal Simulator where we can record and replay test cases involving text, voice, and images to ensure the agent doesn't break after updates.
- * Unified Context Layer: It maintains "Continuous Context" during handoffs (e.g., from a 'Returns' agent to a 'Technical Support' agent), ensuring the user never has to repeat themselves.
-3. Key Comparisons: LangGraph vs. CX Studio
-| Feature | Custom Code (LangGraph) | CX Agentic Studio |
-|---|---|---|
-| Logic | Manual Python nodes/edges. | Visual "Resolution Paths". |
-| Tools | Manual API wrappers. | 100+ Native Connectors (Salesforce, etc.). |
-| Governance | Manual PII filters. | Centralized "Model Armor" Policy Guardrails. |
-| Scaling | We manage infrastructure. | Native Google-managed scaling. |
-4. Risk Assessment & "Developer's Warning"
- * Orchestration Opacity: Since the "Root Agent" decides where to route a user, we have slightly less granular control compared to hard-coded scripts.
- * Vendor Lock-in: The visual journeys built here are proprietary to Google Cloud and cannot be easily exported to other providers like AWS or Azure.
- * Complexity: For very simple FAQ tasks, this platform might be "overkill" compared to a basic RAG setup.
-5. Recommendation
-For our current use case involving complex customer journeys and multimodal needs, the Studio's "Human-in-the-Loop" capabilities and Policy Guardrails make it the superior choice. It allows our developers to focus on high-value logic in the ADK (Agent Development Kit) while allowing the system to handle the heavy lifting of orchestration and scaling.
-Questions to help me finalize this for you:
-To make sure I didn't miss any specific detail for your meeting:
- * The "Resolution Path": In your local research, did you find a specific "Resolution Path" (e.g., a refund flow or a booking flow) that perfectly matches the use case your supervisor gave you?
- * External Logic: Do you plan on importing any of your existing Python code into the Agent Development Kit (ADK), or are you trying to build everything inside the Studio UI?
- * The "Voice" Aspect: Is your specific task focused more on Text chat, or is the Audio-to-Audio (Voice) feature a priority for your team?
-Would you like me to create a "Step-by-Step implementation plan" based on this documentation that you can show your supervisor as your "First 7 Days" plan once you get access?
-
-
-
-
-
-
-
-
-
-
-
+This is great. Having your actual code allows us to perform a "surgical" migration. Your current setup is a classic Stateful Multi-Agent System that relies on a centralized MySQL database for its business logic (the "process maps") and in-memory persistence for short-term chat memory.
+To move this to Google Cloud (Vertex AI/Cloud Run), we need to address three specific code-level shifts:
+ * Database Strategy: Swapping mysql-connector for the cloud-sql-python-connector to handle GCP's networking.
+ * Persistence Strategy: Moving from MemorySaver() (which wipes every time the Cloud Run instance restarts) to a Cloud SQL-backed Checkpointer for production-grade persistence.
+ * Environment Parity: Moving hardcoded configurations (like PHOENIX_COLLECTOR_ENDPOINT) into environment variables.
+1. Code Level: db_connection.py
+We need to modify your DBConnection class to support the GCP Cloud SQL Connector. This avoids the need for IP Whitelisting or complex firewall rules.
 import os
-import pandas as pd
-from langchain_openai import AzureChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableParallel
+import pymysql # Use pymysql with the Cloud SQL Connector
+from google.cloud.sql.connector import Connector, IPTypes
 from config import configuration
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-from pydantic import BaseModel, Field
 
-# --- IMPORT 1: Get the shared Langfuse handler
-from components.llm import langfuse_handler
-
-# --- IMPORT 2: Get the Console Handler (Restores your terminal logs)
-from langchain_core.callbacks import StdOutCallbackHandler
-
-# Set environment variables
-os.environ["OPENAI_API_TYPE"] = configuration['open_ai_cred']['OPENAI_API_TYPE']
-os.environ["AZURE_OPENAI_ENDPOINT"] = configuration['open_ai_cred']['OPENAI_API_BASE']
-os.environ["OPENAI_API_KEY"] = configuration['open_ai_cred']['OPENAI_API_KEY']
-
-llm = AzureChatOpenAI(**{'deployment_name': configuration['open_ai_config']['deployment_name'], 
-                         'openai_api_version': configuration['open_ai_config']['openai_api_version']}, 
-                      temperature=0.1)
-
-# Initialize Console Handler
-std_out_handler = StdOutCallbackHandler()
-
-class recommend_output_format(BaseModel):
-    Recommendation: list[str] = Field(description="returns a list of recommendations")
-
-class Evaluator:
+class DBConnection:
     def __init__(self):
-        self.history = ""
-
-    def calculate_timestamp_difference_tool(self, messages):
-        df = pd.DataFrame(messages)
-        if df.empty or 'timestamp' not in df.columns:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time...','description': 'Data unavailable','flag': 1}]}]
-
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S:%f')
-        df['timestamp_difference'] = df['timestamp'].diff().dt.total_seconds() * 1000
-        df['more_than_20s'] = df['timestamp_difference'] > 20000
-        
-        agent_msgs = df[df['messenger']=="Agent"]
-        if not agent_msgs.empty and True in set(agent_msgs['more_than_20s']):
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did exceed silent time of 20 seconds...','flag': 0}]}]
-        else:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did not exceed silent time of 20 seconds...','flag': 1}]}]
-
-    def load_parameters(self, sub_param_df):
-        param_descriptions = {}
-        for _, row in sub_param_df.iterrows():
-            parameter = row['parameter_name']
-            description = row['std_parameter_desc']
-            if parameter not in param_descriptions:
-                param_descriptions[parameter] = []
-            param_descriptions[parameter].append(description)
-        return param_descriptions
-
-    def recommendation_generator(self, input_json, run_config=None):
-        recommendation_template="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation.
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        
-        input_json:
-        {input_json}
-        
-        format_instructions:
-        {format_instructions}
-        """
-        recommendation_template_without_format="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation.
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        4.Only give recommendations do not output the parameter name as title or heading.
-        
-        input_json:
-        {input_json}
-        """
-        
-        parser = JsonOutputParser(pydantic_object=recommend_output_format)
-        
-        prompt_rec = PromptTemplate(
-            input_variables=["input_json"],
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-            template=recommendation_template)
-            
-        prompt_rec_no_fmt = PromptTemplate(
-            input_variables=["input_json"],
-            template=recommendation_template_without_format)
-        
-        llm_chain_rec = prompt_rec | llm | parser
-        llm_chain_rec_no_fmt = prompt_rec_no_fmt | llm | StrOutputParser()
-        
-        config = run_config if run_config else {}
-        
-        gen_recommendations = llm_chain_rec.invoke({"input_json":input_json}, config=config)
-        
-        # Original print statement (now visible again)
-        print("gen_recommendations---------", gen_recommendations)
-        
-        if "Recommendation" in gen_recommendations.keys():
-            print("recommendation found")
-            return gen_recommendations['Recommendation']
-        else:
-            gen_recommendations = llm_chain_rec_no_fmt.invoke({"input_json":input_json}, config=config)
-            try:
-                gen_recommendations=[line.split(". ",1)[1] for line in gen_recommendations.splitlines() if line.strip()]
-            except:
-                gen_recommendations=[line for line in gen_recommendations.splitlines() if line.strip()]
-            print("recommendation not found")
-            return gen_recommendations
-
-    def report_generator(self, chains, conversation_history, conversation_history_list, param_descriptions, session_id=None, demo_name=None, domain=None):        
-        """
-        Generate report. Uses BOTH Langfuse (for web) and StdOut (for terminal).
-        """
-        
-        # <--- KEY UPDATE: Combine Both Handlers
-        # This restores your terminal logs AND sends data to Langfuse
-        combined_callbacks = [langfuse_handler, std_out_handler]
-
-        run_config = {
-            "callbacks": combined_callbacks,
-            "metadata": {
-                "session_id": session_id,
-                "demo_name": demo_name,
-                "domain": domain,
-                "type": "evaluation"
-            },
-            # Using 'tags' in config metadata is safer than constructor
-            "tags": [demo_name, domain, "evaluation"]
-        }
-        
-        tool_output = self.calculate_timestamp_difference_tool(conversation_history_list)
-        
-        map_chain = RunnableParallel(**chains)
-        
-        # Pass the Combined Config
-        response = map_chain.invoke(
-            {"conversation_history": conversation_history, "tool_output": tool_output},
-            config=run_config
-        )
-        
-        # Pass the Combined Config
-        response['Recommendation'] = self.recommendation_generator(response, run_config=run_config)
-        
-        if hasattr(langfuse_handler, 'flush'):
-            langfuse_handler.flush()
-        
-        return response
-
-
-
-
-
-
-
-
-
-import os
-import pandas as pd
-from langchain_openai import AzureChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableParallel
-from config import configuration
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-from pydantic import BaseModel, Field
-
-# <--- KEY FIX: Import the working handler from your LLM file
-from components.llm import langfuse_handler
-
-# Set environment variables
-os.environ["OPENAI_API_TYPE"] = configuration['open_ai_cred']['OPENAI_API_TYPE']
-os.environ["AZURE_OPENAI_ENDPOINT"] = configuration['open_ai_cred']['OPENAI_API_BASE']
-os.environ["OPENAI_API_KEY"] = configuration['open_ai_cred']['OPENAI_API_KEY']
-
-llm = AzureChatOpenAI(**{'deployment_name': configuration['open_ai_config']['deployment_name'], 
-                         'openai_api_version': configuration['open_ai_config']['openai_api_version']}, 
-                      temperature=0.1)
-
-class recommend_output_format(BaseModel):
-    Recommendation: list[str] = Field(description="returns a list of recommendations")
-
-class Evaluator:
-    def __init__(self):
-        self.history = ""
-
-    def calculate_timestamp_difference_tool(self, messages):
-        df = pd.DataFrame(messages)
-        if df.empty or 'timestamp' not in df.columns:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time...','description': 'Data unavailable','flag': 1}]}]
-
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S:%f')
-        df['timestamp_difference'] = df['timestamp'].diff().dt.total_seconds() * 1000
-        df['more_than_20s'] = df['timestamp_difference'] > 20000
-        
-        agent_msgs = df[df['messenger']=="Agent"]
-        if not agent_msgs.empty and True in set(agent_msgs['more_than_20s']):
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did exceed silent time of 20 seconds...','flag': 0}]}]
-        else:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did not exceed silent time of 20 seconds...','flag': 1}]}]
-
-    def load_parameters(self, sub_param_df):
-        param_descriptions = {}
-        for _, row in sub_param_df.iterrows():
-            parameter = row['parameter_name']
-            description = row['std_parameter_desc']
-            if parameter not in param_descriptions:
-                param_descriptions[parameter] = []
-            param_descriptions[parameter].append(description)
-        return param_descriptions
-
-    # <--- MODIFIED: Accepts config dictionary directly
-    def recommendation_generator(self, input_json, run_config=None):
-        recommendation_template="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation.
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        
-        input_json:
-        {input_json}
-        
-        format_instructions:
-        {format_instructions}
-        """
-        recommendation_template_without_format="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation.
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        4.Only give recommendations do not output the parameter name as title or heading.
-        
-        input_json:
-        {input_json}
-        """
-        
-        parser = JsonOutputParser(pydantic_object=recommend_output_format)
-        
-        prompt_rec = PromptTemplate(
-            input_variables=["input_json"],
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-            template=recommendation_template)
-            
-        prompt_rec_no_fmt = PromptTemplate(
-            input_variables=["input_json"],
-            template=recommendation_template_without_format)
-        
-        llm_chain_rec = prompt_rec | llm | parser
-        llm_chain_rec_no_fmt = prompt_rec_no_fmt | llm | StrOutputParser()
-        
-        # Use the config passed from report_generator (contains handler + metadata)
-        config = run_config if run_config else {}
-        
-        gen_recommendations = llm_chain_rec.invoke({"input_json":input_json}, config=config)
-        
-        if "Recommendation" in gen_recommendations.keys():
-            return gen_recommendations['Recommendation']
-        else:
-            gen_recommendations = llm_chain_rec_no_fmt.invoke({"input_json":input_json}, config=config)
-            try:
-                gen_recommendations=[line.split(". ",1)[1] for line in gen_recommendations.splitlines() if line.strip()]
-            except:
-                gen_recommendations=[line for line in gen_recommendations.splitlines() if line.strip()]
-            return gen_recommendations
-
-    def report_generator(self, chains, conversation_history, conversation_history_list, param_descriptions, session_id=None, demo_name=None, domain=None):        
-        """
-        Generate report. Uses the global langfuse_handler from components.llm
-        """
-        
-        # <--- KEY FIX: Prepare the config dictionary
-        # We pass the handler here, AND we pass the session_id as metadata
-        # This prevents the constructor crash.
-        run_config = {
-            "callbacks": [langfuse_handler],
-            "metadata": {
-                "session_id": session_id,
-                "demo_name": demo_name,
-                "domain": domain,
-                "type": "evaluation"
-            },
-            "tags": [demo_name, domain, "evaluation"]
-        }
-        
-        tool_output = self.calculate_timestamp_difference_tool(conversation_history_list)
-        
-        map_chain = RunnableParallel(**chains)
-        
-        # Pass the Safe Config to the chain
-        response = map_chain.invoke(
-            {"conversation_history": conversation_history, "tool_output": tool_output},
-            config=run_config
-        )
-        
-        # Pass the Safe Config to the recommendation generator
-        response['Recommendation'] = self.recommendation_generator(response, run_config=run_config)
-        
-        # Flush the global handler to send data
-        if hasattr(langfuse_handler, 'flush'):
-            langfuse_handler.flush()
-        
-        return response
-
-
-
-
-
-import os
-import pandas as pd
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
-from langchain_openai import AzureChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableParallel
-from config import configuration
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any
-
-# --- LANGFUSE UPDATES ---
-from langfuse import Langfuse
-
-# Set environment variables for OpenAI API
-os.environ["OPENAI_API_TYPE"] = configuration['open_ai_cred']['OPENAI_API_TYPE']
-os.environ["AZURE_OPENAI_ENDPOINT"] = configuration['open_ai_cred']['OPENAI_API_BASE']
-os.environ["OPENAI_API_KEY"] = configuration['open_ai_cred']['OPENAI_API_KEY']
-
-# Initialize the LLM model
-llm = AzureChatOpenAI(**{'deployment_name': configuration['open_ai_config']['deployment_name'], 
-                         'openai_api_version': configuration['open_ai_config']['openai_api_version']}, 
-                      temperature=0.1)
-
-# Initialize Langfuse Client to handle traces manually
-# This reads the env vars you set in llm.py or config
-langfuse = Langfuse()
-
-class recommend_output_format(BaseModel):
-    Recommendation: list[str] = Field(description="returns a list of recommendations for improvement from the conversation between agent and customer ")
-
-
-class Evaluator:
-    def __init__(self):
-        self.history = ""
-
-    def calculate_timestamp_difference_tool(self, messages):
-        """
-        calculate the timestamp of agent and doctor/customer conversation 
-        """
-        df = pd.DataFrame(messages)
-        if df.empty or 'timestamp' not in df.columns:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time...','description': 'Data unavailable','flag': 1}]}]
-
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S:%f')
-        df['timestamp_difference'] = df['timestamp'].diff().dt.total_seconds() * 1000
-        df['more_than_20s'] = df['timestamp_difference'] > 20000
-        
-        agent_msgs = df[df['messenger']=="Agent"]
-        if not agent_msgs.empty and True in set(agent_msgs['more_than_20s']):
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did exceed silent time of 20 seconds...','flag': 0}]}]
-        else:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did not exceed silent time of 20 seconds...','flag': 1}]}]
-    
-    def load_parameters(self, sub_param_df):
-        param_descriptions = {}
-        for _, row in sub_param_df.iterrows():
-            parameter = row['parameter_name']
-            description = row['std_parameter_desc']
-            if parameter not in param_descriptions:
-                param_descriptions[parameter] = []
-            param_descriptions[parameter].append(description)
-        return param_descriptions
-
-    # --- UPDATED: Accepts callbacks argument ---
-    def recommendation_generator(self, input_json, callbacks=None):
-        recommendation_template="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer. 
-        
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        
-        input_json:
-        {input_json}
-        
-        format_instructions:
-        {format_instructions}
-        """
-        recommendation_template_without_format="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer. 
-        
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        4.Only give recommendations do not output the parameter name as title or heading.
-        
-        input_json:
-        {input_json}
-        """
-        
-        parser = JsonOutputParser(pydantic_object=recommend_output_format)
-        
-        prompt_recommendation = PromptTemplate(
-            input_variables=["input_json"],
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-            template=recommendation_template)
-            
-        prompt_recommendation_without_format = PromptTemplate(
-            input_variables=["input_json"],
-            template=recommendation_template_without_format)
-        
-        llm_chain_recommendation = prompt_recommendation | llm | parser
-        llm_chain_recommendation_without_format = prompt_recommendation_without_format | llm | StrOutputParser()
-        
-        # --- PASSING CALLBACKS TO INVOKE ---
-        config = {"callbacks": callbacks} if callbacks else {}
-        
-        gen_recommendations = llm_chain_recommendation.invoke({"input_json":input_json}, config=config)
-        print("gen_recommendations---------", gen_recommendations)
-        
-        if "Recommendation" in gen_recommendations.keys():
-            print("recommendation found")
-            return gen_recommendations['Recommendation']
-        else:
-            gen_recommendations = llm_chain_recommendation_without_format.invoke({"input_json":input_json}, config=config)
-            try:
-                gen_recommendations=[line.split(". ",1)[1] for line in gen_recommendations.splitlines() if line.strip()]
-            except:
-                gen_recommendations=[line for line in gen_recommendations.splitlines() if line.strip()]
-            return gen_recommendations
-
-    # --- UPDATED: New Arguments and Trace Creation ---
-    def report_generator(self, chains, conversation_history, conversation_history_list, param_descriptions, session_id=None, demo_name=None, domain=None):        
-        """
-        Generate a report with recommendations based on conversation history.
-        Uses Langfuse Trace to link evaluation to the session.
-        """
-        
-        # 1. CREATE A SPECIFIC TRACE FOR THIS EVALUATION
-        # This links the evaluation run to your Mock Call session_id
-        trace = langfuse.trace(
-            name="Evaluation Report",
-            session_id=session_id,
-            metadata={
-                "demo_name": demo_name,
-                "domain": domain,
-                "type": "evaluation"
-            }
-        )
-        
-        # 2. GET THE HANDLER FROM THE TRACE
-        # This handler knows exactly which session it belongs to
-        langfuse_handler = trace.get_langchain_handler()
-        
-        # Tool calculation (Manual python logic, usually not traced)
-        tool_output = self.calculate_timestamp_difference_tool(conversation_history_list)
-        
-        map_chain = RunnableParallel(**chains)
-        
-        # 3. PASS HANDLER TO PARALLEL CHAIN
-        response = map_chain.invoke(
-            {"conversation_history": conversation_history, "tool_output": tool_output},
-            config={"callbacks": [langfuse_handler]}
-        )
-        
-        # 4. PASS HANDLER TO RECOMMENDATION
-        response['Recommendation'] = self.recommendation_generator(response, callbacks=[langfuse_handler])
-        
-        # Ensure data is flushed to Langfuse
-        langfuse.flush()
-        
-        return response
-
-
-
-
-
-
-
-
-import os
-import pandas as pd
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
-from langchain_openai import AzureChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableParallel
-from config import configuration
-from langchain_core.output_parsers import JsonOutputParser,StrOutputParser
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any
-
-# <--- LANGFUSE IMPORT: Import the main client, not the handler directly
-from langfuse import Langfuse
-
-# Set environment variables for OpenAI API
-os.environ["OPENAI_API_TYPE"] = configuration['open_ai_cred']['OPENAI_API_TYPE']
-os.environ["AZURE_OPENAI_ENDPOINT"] = configuration['open_ai_cred']['OPENAI_API_BASE']
-os.environ["OPENAI_API_KEY"] = configuration['open_ai_cred']['OPENAI_API_KEY']
-
-# Initialize the LLM model
-llm = AzureChatOpenAI(**{'deployment_name': configuration['open_ai_config']['deployment_name'], 
-                         'openai_api_version': configuration['open_ai_config']['openai_api_version']}, 
-                      temperature=0.1)
-
-# Initialize Langfuse Client (It reads keys from your ENV or config automatically)
-langfuse = Langfuse() 
-
-class recommend_output_format(BaseModel):
-    Recommendation: list[str] = Field(description="returns a list of recommendations for improvement from the conversation between agent and customer ")
-
-
-class Evaluator:
-    def __init__(self):
-        self.history = ""
-
-    def calculate_timestamp_difference_tool(self, messages):
-        # (Your existing logic remains unchanged)
-        df = pd.DataFrame(messages)
-        if df.empty or 'timestamp' not in df.columns:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time...','description': 'Data unavailable','flag': 1}]}]
-
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S:%f')
-        df['timestamp_difference'] = df['timestamp'].diff().dt.total_seconds() * 1000
-        df['more_than_20s'] = df['timestamp_difference'] > 20000
-        
-        agent_msgs = df[df['messenger']=="Agent"]
-        if not agent_msgs.empty and True in set(agent_msgs['more_than_20s']):
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did exceed silent time of 20 seconds...','flag': 0}]}]
-        else:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did not exceed silent time of 20 seconds...','flag': 1}]}]
-    
-    def load_parameters(self, sub_param_df):
-        # (Your existing logic remains unchanged)
-        param_descriptions = {}
-        for _, row in sub_param_df.iterrows():
-            parameter = row['parameter_name']
-            description = row['std_parameter_desc']
-            if parameter not in param_descriptions:
-                param_descriptions[parameter] = []
-            param_descriptions[parameter].append(description)
-        return param_descriptions
-
-    def recommendation_generator(self, input_json, callbacks=None):
-        recommendation_template="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer. You will be given a JSON object that includes param_name with description and flag. The description explains the reason for the flag value (0 or 1). A flag of 0 means the param_name is not present in the conversation, while a flag of 1 means the param_name is present in the conversation.
-        
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        
-        input_json:
-        {input_json}
-        
-        format_instructions:
-        {format_instructions}
-        """
-        recommendation_template_without_format="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer. You will be given a JSON object that includes param_name with description and flag. The description explains the reason for the flag value (0 or 1). A flag of 0 means the param_name is not present in the conversation, while a flag of 1 means the param_name is present in the conversation.
-        
-        Instructions:
-        1.Consider param_name value with a flag of 0 and its corresponding description into well-written English sentences as recommendation.
-        2.Give recommendation in detail explaining to the agent whats needs to be done next time to improve the performance.
-        3.Make sure it DO NOT exceed 15 words
-        4.Only give recommendations do not output the parameter name as title or heading.
-        
-        input_json:
-        {input_json}
-        """
-        
-        parser = JsonOutputParser(pydantic_object=recommend_output_format)
-        
-        prompt_recommendation = PromptTemplate(
-            input_variables=["input_json"],
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-            template=recommendation_template)
-            
-        prompt_recommendation_without_format = PromptTemplate(
-            input_variables=["input_json"],
-            template=recommendation_template_without_format)
-        
-        llm_chain_recommendation = prompt_recommendation | llm | parser
-        llm_chain_recommendation_without_format = prompt_recommendation_without_format | llm | StrOutputParser()
-        
-        # <--- TRACING: Pass callbacks config
-        config = {"callbacks": callbacks} if callbacks else {}
-        
-        gen_recommendations = llm_chain_recommendation.invoke({"input_json":input_json}, config=config)
-        print("gen_recommendations---------", gen_recommendations)
-        
-        if "Recommendation" in gen_recommendations.keys():
-            print("recommendation found")
-            return gen_recommendations['Recommendation']
-        else:
-            gen_recommendations = llm_chain_recommendation_without_format.invoke({"input_json":input_json}, config=config)
-            try:
-                gen_recommendations=[line.split(". ",1)[1] for line in gen_recommendations.splitlines() if line.strip()]
-            except:
-                gen_recommendations=[line for line in gen_recommendations.splitlines() if line.strip()]
-            return gen_recommendations
-
-    def report_generator(self, chains, conversation_history, conversation_history_list, param_descriptions, session_id=None, demo_name=None, domain=None):        
-        """
-        Generate a report with recommendations based on conversation history and dynamic parameters
-        """
-        
-        # <--- NEW FIX: Create Trace First, Get Handler Second
-        # This bypasses the constructor error because 'trace' knows how to handle session_id
-        trace = langfuse.trace(
-            name="evaluation_run",
-            session_id=session_id,
-            metadata={
-                "demo_name": demo_name,
-                "domain": domain
-            },
-            tags=[demo_name, domain, "evaluation"]
-        )
-        
-        # Get the handler specifically for LangChain
-        langfuse_handler = trace.get_langchain_handler()
-        
-        # Calculate tool output (Not traced by LangChain, but that's fine)
-        tool_output = self.calculate_timestamp_difference_tool(conversation_history_list)
-        
-        map_chain = RunnableParallel(**chains)
-        
-        # <--- PASS HANDLER to invoke
-        response = map_chain.invoke(
-            {"conversation_history": conversation_history, "tool_output": tool_output},
-            config={"callbacks": [langfuse_handler]}
-        )
-        
-        # <--- PASS HANDLER to recommendation
-        response['Recommendation'] = self.recommendation_generator(response, callbacks=[langfuse_handler])
-        
-        # Ensure everything is sent
-        langfuse.flush()
-        
-        return response
-
-
-
-
-
-
-import os
-import pandas as pd
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
-from langchain_openai import AzureChatOpenAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableParallel
-from config import configuration
-from langchain_core.output_parsers import JsonOutputParser,StrOutputParser
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any
-
-# <--- LANGFUSE IMPORT
-from langfuse.callback import CallbackHandler 
-
-# Set environment variables for OpenAI API
-os.environ["OPENAI_API_TYPE"] = configuration['open_ai_cred']['OPENAI_API_TYPE']
-os.environ["AZURE_OPENAI_ENDPOINT"] = configuration['open_ai_cred']['OPENAI_API_BASE']
-os.environ["OPENAI_API_KEY"] = configuration['open_ai_cred']['OPENAI_API_KEY']
-
-# Initialize the LLM model
-llm = AzureChatOpenAI(**{'deployment_name': configuration['open_ai_config']['deployment_name'], 
-                         'openai_api_version': configuration['open_ai_config']['openai_api_version']}, 
-                      temperature=0.1)
-
-class recommend_output_format(BaseModel):
-    Recommendation: list[str] = Field(description="returns a list of recommendations for improvement from the conversation between agent and customer ")
-
-
-class Evaluator:
-    def __init__(self):
-        self.history = ""
-
-    def calculate_timestamp_difference_tool(self,messages):
-        """
-        calculate the timestamp of agent and doctor/customer conversation and return a True or False if agent took more than 5 seconds to respond to the query.
-        """
-        # (Your existing logic remains unchanged)
-        df = pd.DataFrame(messages)
-        # Added safety check for empty messages
-        if df.empty or 'timestamp' not in df.columns:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time...','description': 'Data unavailable','flag': 1}]}]
-
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='%Y-%m-%d %H:%M:%S:%f')
-        df['timestamp_difference'] = df['timestamp'].diff().dt.total_seconds() * 1000
-        df['more_than_20s'] = df['timestamp_difference'] > 20000
-        # print(df[df['messenger']=="Agent"]['more_than_20s'].head(20))
-        
-        # Fixed potential error if filtering returns empty
-        agent_msgs = df[df['messenger']=="Agent"]
-        if not agent_msgs.empty and True in set(agent_msgs['more_than_20s']):
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did exceed silent time of 20 seconds...','flag': 0}]}]
-        else:
-            return [{'key': 'Call Handling','sub_parameters': [{'ID': 'CH3','param_name': 'Advocate did not exceed silent time of 20 seconds...','description': 'Advocate did not exceed silent time of 20 seconds...','flag': 1}]}]
-    
-    def load_parameters(self, sub_param_df):
-        # (Your existing logic remains unchanged)
-        param_descriptions = {}
-        for _, row in sub_param_df.iterrows():
-            parameter = row['parameter_name']
-            description = row['std_parameter_desc']
-            if parameter not in param_descriptions:
-                param_descriptions[parameter] = []
-            param_descriptions[parameter].append(description)
-        return param_descriptions
-
-    # <--- MODIFIED: Added 'callbacks' argument
-    def recommendation_generator(self, input_json, callbacks=None):
-        recommendation_template="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer...
-        (Rest of your prompt...)
-        input_json:
-        {input_json}
-        format_instructions:
-        {format_instructions}
-        """
-        
-        recommendation_template_without_format="""
-        System Instructions:
-        As an AI Evaluator, your task is to provide recommendations for improving the agent's conversation with the customer...
-        (Rest of your prompt...)
-        input_json:
-        {input_json}
-        """
-        
-        parser = JsonOutputParser(pydantic_object=recommend_output_format)
-        
-        prompt_recommendation = PromptTemplate(
-            input_variables=["input_json"],
-            partial_variables={"format_instructions": parser.get_format_instructions()},
-            template=recommendation_template)
-            
-        prompt_recommendation_without_format = PromptTemplate(
-            input_variables=["input_json"],
-            template=recommendation_template_without_format)
-        
-        llm_chain_recommendation = prompt_recommendation | llm | parser
-        llm_chain_recommendation_without_format = prompt_recommendation_without_format | llm | StrOutputParser()
-        
-        # <--- TRACING: Pass callbacks config to invoke
-        config = {"callbacks": callbacks} if callbacks else {}
-        
-        gen_recommendations = llm_chain_recommendation.invoke({"input_json":input_json}, config=config)
-        print("gen_recommendations---------", gen_recommendations)
-        
-        if "Recommendation" in gen_recommendations.keys():
-            print("recommendation found")
-            return gen_recommendations['Recommendation']
-        else:
-            # <--- TRACING: Pass callbacks here too
-            gen_recommendations = llm_chain_recommendation_without_format.invoke({"input_json":input_json}, config=config)
-            
-            try:
-                gen_recommendations=[line.split(". ",1)[1] for line in gen_recommendations.splitlines() if line.strip()]
-            except:
-                gen_recommendations=[line for line in gen_recommendations.splitlines() if line.strip()]
-            
-            return gen_recommendations
-
-    # <--- MODIFIED: Added session_id, demo_name, domain arguments
-    def report_generator(self, chains, conversation_history, conversation_history_list, param_descriptions, session_id=None, demo_name=None, domain=None):        
-        """
-        Generate a report with recommendations based on conversation history and dynamic parameters
-        """
-        
-        # <--- LANGFUSE SETUP: Initialize the handler for this specific run
-        langfuse_handler = CallbackHandler(
-            session_id=session_id,
-            user_id="evaluator_bot",
-            tags=[demo_name, domain, "evaluation"],
-            metadata={
-                "demo_name": demo_name,
-                "domain": domain,
-                "type": "evaluation_run"
-            }
-        )
-        
-        # Tool execution (Latency here is instantaneous Python code, usually not traced, but the rest is)
-        tool_output = self.calculate_timestamp_difference_tool(conversation_history_list)
-        
-        map_chain = RunnableParallel(**chains)
-        
-        # <--- TRACING: Pass the handler to the main parallel chain
-        # This will automatically trace ALL parallel parameter evaluations
-        response = map_chain.invoke(
-            {"conversation_history": conversation_history, "tool_output": tool_output},
-            config={"callbacks": [langfuse_handler]}
-        )
-        
-        # <--- TRACING: Pass the handler to the recommendation generator
-        # This ensures the recommendation LLM call is part of the SAME trace
-        response['Recommendation'] = self.recommendation_generator(response, callbacks=[langfuse_handler])
-        
-        # Flush to ensure data is sent to Langfuse immediately
-        langfuse_handler.flush()
-        
-        return response
-
-
-
-
-
-# In main.py inside evaluate endpoint:
-
-            # ... (your existing code loading params) ...
-            
-            # Generate report
-            # <--- UPDATE THIS CALL
-            report = evaluator.report_generator(
-                chains=eval_params_loader_obj.chains,
-                conversation_history=conversation_history,
-                conversation_history_list=conversation_history_list,
-                param_descriptions=param_descriptions,
-                # New Arguments for Tracing:
-                session_id=sid,
-                demo_name=query.demo_name,
-                domain=query.domain
+        # We now use environment variables set in the GCP Console
+        self.db_type = os.getenv("DB_TYPE", "db_dev")
+        self.instance_connection_name = os.getenv("INSTANCE_CONNECTION_NAME") # "project:region:instance"
+        self.db_user = os.getenv("DB_USER")
+        self.db_pass = os.getenv("DB_PASS")
+        self.db_name = os.getenv("DB_NAME")
+        
+        # Local fallback logic if you are still testing on VM
+        self.is_local = os.getenv("IS_LOCAL", "true").lower() == "true"
+        
+        self.db_enabled = True # Force enabled for cloud
+        self.connector = Connector()
+
+    def _connect(self):
+        # If running in GCP, use the secure connector
+        if not self.is_local:
+            return self.connector.connect(
+                self.instance_connection_name,
+                "pymysql",
+                user=self.db_user,
+                password=self.db_pass,
+                db=self.db_name,
+                ip_type=IPTypes.PUBLIC
             )
-            
-            # ... (rest of your calculation logic) ...
+        else:
+            # Your existing local connection logic
+            import mysql.connector
+            config = configuration[self.db_type]
+            return mysql.connector.connect(
+                host=config['host'], port=config['port'],
+                user=config['user'], password=config['password'],
+                database=config['database']
+            )
 
+    # Note: Keep your insert(), fetch_one(), etc. identical. 
+    # Just ensure you handle the cursor type correctly (pymysql vs mysql.connector).
+    def fetch_one(self, query, params=()):
+        conn = self._connect()
+        # Handle difference in cursor initialization
+        cursor = conn.cursor(pymysql.cursors.DictCursor) if not self.is_local else conn.cursor(dictionary=True)
+        query = query.replace("?", "%s")
+        cursor.execute(query, params)
+        result = cursor.fetchone()
+        conn.close()
+        return result
 
+2. Code Level: graph.py
+Currently, you use MemorySaver(). In Cloud Run, instances "scale to zero" or restart. MemorySaver will lose all your chat progress.
+Recommendation: Swap MemorySaver for a MySQL-based checkpointer (using your Cloud SQL instance).
+# Updated get_graph function in graph.py
+from langgraph.checkpoint.mysql import MySQLSaver # You'll need to install langgraph-checkpoint-mysql
 
-
-
-
-
-
-# agent_util.py
-from google.adk.agents import LlmAgent
-from google.adk.models.vertex_ai import VertexAiModel
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-import prompts  # Importing your prompts file
-
-def create_agent_runner():
-    # 1. Initialize Model
-    model = VertexAiModel("gemini-1.5-pro")
-
-    # 2. Define Sub-Agents (Using imported prompts)
-    call_initiation = LlmAgent(name="call_initiation", model=model, instruction=prompts.INITIATION_INSTRUCTION)
-    verification = LlmAgent(name="verification", model=model, instruction=prompts.VERIFICATION_INSTRUCTION)
-    medication = LlmAgent(name="medication", model=model, instruction=prompts.MEDICATION_INSTRUCTION)
-    symptom = LlmAgent(name="symptom", model=model, instruction=prompts.SYMPTOM_INSTRUCTION)
-    service = LlmAgent(name="service", model=model, instruction=prompts.SERVICE_INSTRUCTION)
-    closure = LlmAgent(name="closure", model=model, instruction=prompts.CLOSURE_INSTRUCTION)
-    fallback = LlmAgent(name="fallback", model=model, instruction=prompts.FALLBACK_INSTRUCTION)
-
-    # 3. Define Root Agent
-    root_agent = LlmAgent(
-        name="root_router",
-        model=model,
-        instruction=prompts.ROOT_INSTRUCTION
-    )
-
-    # 4. Create and Return Runner
-    # This object encapsulates your entire 6-agent system
-    runner = Runner(
-        agent=root_agent,
-        sub_agents=[call_initiation, verification, medication, symptom, service, closure, fallback],
-        session_service=InMemorySessionService()
-    )
+def get_graph(with_memory: bool = True):
+    graph = build_graph()
     
-    return runner
+    if with_memory:
+        # Check if we are in production/cloud
+        if os.getenv("IS_LOCAL") == "false":
+            # Use Cloud SQL for persistence
+            db_conn = DBConnection()
+            checkpointer = MySQLSaver(db_conn._connect()) 
+            return graph.compile(checkpointer=checkpointer)
+        else:
+            return graph.compile(checkpointer=MemorySaver())
+    return graph.compile()
+
+3. Code Level: main.py
+We need to make the API "Cloud-Native" by removing hardcoded host/port and cleaning up the Arize Phoenix setup for the cloud.
+# main.py changes
+import os
+
+# 1. Dynamic Port for Cloud Run
+PORT = int(os.environ.get("PORT", 7006))
+
+# 2. Conditional Observability
+if os.getenv("ENABLE_TRACING") == "true":
+    from phoenix.otel import register
+    register(
+        project_name=os.getenv("PHOENIX_PROJECT", "healthcare-outreach"),
+        endpoint=os.getenv("PHOENIX_COLLECTOR_ENDPOINT")
+    )
+
+# 3. Use the correct URL from your config
+demo_endpoint = configuration['api_url']['demo_url']
+
+@app.post(f"{demo_endpoint}/generatemockcall")
+async def mock_call(query: MockQuery):
+    # Your existing logic remains 95% the same!
+    # The 'sessions' dict should ideally be moved to Redis or Cloud SQL 
+    # if you want to share session metadata across multiple Cloud Run instances.
+    ...
+
+if __name__ == "__main__":
+    # Change host to 0.0.0.0 for GCP visibility
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
+
+4. The requirements.txt (The Migration "Engine")
+Since you cannot use Docker locally, this file is what Google Cloud Build will use to build your environment. Add these to your existing file:
+fastapi
+uvicorn
+langgraph
+langgraph-checkpoint-mysql
+langchain-openai
+google-cloud-sql-connector[pymysql]
+pymysql
+cryptography
+pydantic
+arize-phoenix
+
+Summary of what you need to do in the GCP Console:
+ * Cloud SQL: Create a MySQL instance.
+ * Secret Manager: (Optional) Put your OPENAI_API_KEY and DB_PASS here.
+ * Deployment: Run the gcloud run deploy command I provided in the previous turn.
+Next Step
+Would you like me to help you write a Python script to initialize the MySQL tables specifically for the MySQLSaver checkpointer so your graph's persistence is ready before you deploy?
