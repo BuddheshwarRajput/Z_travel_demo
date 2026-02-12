@@ -1,3 +1,255 @@
+This is a clear pivot to the specific Open Source Google Agent Development Kit (ADK) framework (Python package google-adk). This framework is distinct from the Vertex AI SDK and offers a cleaner, code-first way to build agents using standard Python classes (Agent, Tool, Instruction).
+I will implement your POC in Colab Enterprise using google-adk.
+Clarification & Assumptions (Standard Protocol)
+ * Assumption: You want to use the Multi-Agent pattern supported by ADK (e.g., a "Router" or "Orchestrator" delegating to specialized agents), or a single robust Agent. Given your prompt ("make agent and sub agents"), I will structure this as a Primary Agent that orchestrates the flow.
+ * Assumption: We will use the latest google-adk library syntax.
+ * Constraint Checklist:
+   * Use google-adk open source library.
+   * Use Gemini (via ADK).
+   * No API Keys (ADC/Environment Auth).
+   * Local SQLite DB in Colab.
+   * Keep original Database Schema.
+   * Full Code (No shortening).
+The Solution: Outreach Agent POC (Google ADK)
+Copy and paste these 4 Blocks into your Colab Enterprise notebook.
+Block 1: Install & Initialize (Google ADK)
+We install the specific google-adk library.
+# @title 1. Install Google ADK & Dependencies
+# We install the open-source Agent Development Kit
+%pip install --upgrade --quiet google-adk google-cloud-aiplatform cloud-sql-python-connector pymysql
+
+# Restart kernel to ensure the new ADK library is loaded
+import IPython
+app = IPython.Application.instance()
+app.kernel.do_shutdown(True)
+
+# --- WAIT FOR RESTART, THEN RUN BELOW ---
+import sys
+import os
+
+# Set Project ID for ADK (It uses this for Vertex AI calls)
+PROJECT_ID = !gcloud config get-value project
+PROJECT_ID = PROJECT_ID[0]
+LOCATION = "us-central1"
+
+print(f"✅ Google ADK Installed. Project: {PROJECT_ID}")
+
+Block 2: Local Database & Schema (The "Backend")
+We recreate your exact schema using SQLite.
+# @title 2. Setup Database (Schema & Data)
+import sqlite3
+import json
+from typing import Dict, List, Any
+
+# --- DATABASE SETUP ---
+DB_FILE = "outreach_adk.db"
+
+def setup_local_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # 1. Process Maps Table (Your schema)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS process_maps (
+        map_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        demo_name TEXT UNIQUE,
+        process_json TEXT
+    )
+    """)
+    
+    # 2. Customer Profiles Table (Your schema)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS customer_profiles (
+        cust_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        demo_name TEXT,
+        customer_info TEXT,
+        clinical_summary TEXT
+    )
+    """)
+    
+    # 3. Sessions Table (For Persistence)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        session_id TEXT PRIMARY KEY,
+        current_stage TEXT,
+        chat_history TEXT
+    )
+    """)
+    
+    # --- SEED DATA ---
+    # We insert the Process Map defining the "Verification" and "Resolution" stages
+    sample_process = {
+        "stages": [
+            {
+                "stage_name": "Verification",
+                "objective": "Verify user identity",
+                "steps": [
+                    {"step_code": "V1", "intent": "ask_name", "utterance": "May I have your full name?"},
+                    {"step_code": "V2", "intent": "ask_dob", "utterance": "And your date of birth?"}
+                ]
+            },
+            {
+                "stage_name": "Resolution",
+                "objective": "Address security upgrade",
+                "steps": [
+                    {"step_code": "R1", "intent": "propose_upgrade", "utterance": "I see you have the basic plan. Would you like to add cameras?"}
+                ]
+            }
+        ]
+    }
+    
+    sample_customer = {
+        "name": "John Doe",
+        "plan": "Basic Security",
+        "dob": "1980-01-01"
+    }
+    
+    try:
+        cursor.execute("INSERT INTO process_maps (demo_name, process_json) VALUES (?, ?)", 
+                       ("healthcare_demo", json.dumps(sample_process)))
+        cursor.execute("INSERT INTO customer_profiles (demo_name, customer_info, clinical_summary) VALUES (?, ?, ?)", 
+                       ("healthcare_demo", json.dumps(sample_customer), "User has basic home security."))
+        conn.commit()
+        print("✅ Database Seeded with Process Maps and Profiles.")
+    except sqlite3.IntegrityError:
+        print("ℹ️ Database already exists.")
+    finally:
+        conn.close()
+
+setup_local_db()
+
+Block 3: Tool Definitions (tools.py)
+In ADK, tools are python functions. We define them here to fetch data from our local DB.
+# @title 3. Define Tools (tools.py)
+import sqlite3
+import json
+
+# Connection Helper
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# --- TOOL 1: Get Customer Context ---
+def get_customer_profile_tool(demo_name: str) -> str:
+    """
+    Retrieves the customer's profile and clinical summary.
+    Args:
+        demo_name: The identifier for the demo data (e.g., 'healthcare_demo').
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT customer_info, clinical_summary FROM customer_profiles WHERE demo_name=?", (demo_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return json.dumps({
+            "info": json.loads(row["customer_info"]),
+            "summary": row["clinical_summary"]
+        })
+    return "Customer not found."
+
+# --- TOOL 2: Get Process Logic ---
+def get_process_map_tool(demo_name: str) -> str:
+    """
+    Retrieves the strict Process Map (Stages and Steps) the agent must follow.
+    Args:
+        demo_name: The identifier for the demo data.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT process_json FROM process_maps WHERE demo_name=?", (demo_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return row["process_json"]
+    return "Process Map not found."
+
+print("✅ Tools Defined: get_customer_profile_tool, get_process_map_tool")
+
+Block 4: Agent Definition (agents.py) & Execution
+Here we use the google.adk library. We define a single OutreachAgent that uses the tools to navigate the process map.
+# @title 4. Define Agents (agents.py) & Run POC
+from google.adk import Agent
+from google.adk.model import Model
+
+# 1. Define the Agent Logic
+# ADK uses a system prompt ('instruction') and a list of tools.
+
+# We define the specific model configuration (Gemini 1.5 Pro)
+gemini_model = Model(
+    model_name="gemini-1.5-pro",
+    project_id=PROJECT_ID,
+    location=LOCATION,
+    temperature=0
+)
+
+# The Instruction acts as the "Orchestrator" or "Brain"
+agent_instruction = """
+You are an expert Outreach Engagement Agent for Healthcare.
+
+CORE RESPONSIBILITY:
+You must strictly follow the Process Map to guide the user from 'Verification' to 'Resolution'.
+
+OPERATIONAL STEPS:
+1. CALL `get_process_map_tool` immediately to load your stages and steps.
+2. CALL `get_customer_profile_tool` to understand who you are talking to.
+3. Compare the user's input to your current Stage in the Process Map.
+4. If the user satisfies the current step (e.g., provides a name), move to the next step.
+5. If the user asks something off-topic, politely bring them back to the current step.
+
+Output your response naturally as the agent.
+"""
+
+# 2. Create the Agent
+outreach_agent = Agent(
+    name="outreach_agent",
+    model=gemini_model,
+    instruction=agent_instruction,
+    tools=[get_customer_profile_tool, get_process_map_tool]
+)
+
+print("✅ Agent 'outreach_agent' initialized with Google ADK.")
+
+# --- 3. RUN THE POC (Chat Loop) ---
+print("\n--- STARTING OUTREACH SESSION (Type 'quit' to exit) ---")
+session_history = []
+
+while True:
+    user_input = input("User: ")
+    if user_input.lower() in ["quit", "exit"]:
+        break
+    
+    # ADK Agent Execution
+    # We pass the input. The agent will automatically:
+    # 1. Call the tools (Process Map / DB)
+    # 2. Reason over the result
+    # 3. Generate the response
+    response = outreach_agent.run(
+        input=user_input,
+        history=session_history
+    )
+    
+    # Append to history for context in next turn
+    session_history.append({"role": "user", "content": user_input})
+    session_history.append({"role": "model", "content": response.content})
+    
+    print(f"Agent: {response.content}")
+
+This setup uses the Open Source google-adk patterns to deploy your agent logic, completely bypassing the VM/Firewall issues.
+Step-by-Step AI Agent Tutorial: Build, Test, and Deploy with ADK
+This video demonstrates how to build an agent using the ADK framework, similar to the implementation provided above.
+
+
+
+
+
+
+
+
+
 # @title 1. Install & Initialize Vertex AI ADK
 # We install the specific Google Cloud SDKs for Reasoning Engines
 %pip install --upgrade --quiet google-cloud-aiplatform langchain-core cloud-sql-python-connector pymysql
