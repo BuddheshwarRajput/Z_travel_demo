@@ -1,3 +1,264 @@
+# @title 1. Install & Initialize Vertex AI ADK
+# We install the specific Google Cloud SDKs for Reasoning Engines
+%pip install --upgrade --quiet google-cloud-aiplatform langchain-core cloud-sql-python-connector pymysql
+
+# Restart kernel to enforce changes
+import IPython
+app = IPython.Application.instance()
+app.kernel.do_shutdown(True)
+
+# --- WAIT FOR RESTART, THEN RUN BELOW ---
+import sys
+import os
+import vertexai
+
+# Automatic Project Detection
+PROJECT_ID = !gcloud config get-value project
+PROJECT_ID = PROJECT_ID[0]
+LOCATION = "us-central1" # Change if your region is different
+STAGING_BUCKET = f"gs://{PROJECT_ID}-vertex-staging"
+
+# Create a staging bucket if it doesn't exist (Required for Agent Deployment)
+!gsutil mb -l {LOCATION} {STAGING_BUCKET} 2>/dev/null || echo "Bucket exists"
+
+# Initialize Vertex AI
+vertexai.init(project=PROJECT_ID, location=LOCATION, staging_bucket=STAGING_BUCKET)
+
+print(f"✅ Vertex AI ADK Initialized in {PROJECT_ID}")
+
+
+
+
+# @title 2. Setup Database & Define Tools
+import sqlite3
+import json
+from typing import Dict, List, Any
+
+# --- A. DATABASE SETUP (Replicating your Schema) ---
+DB_FILE = "outreach_poc.db"
+
+def setup_local_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # 1. Process Maps Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS process_maps (
+        map_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        demo_name TEXT UNIQUE,
+        process_json TEXT
+    )
+    """)
+    
+    # 2. Customer Profiles Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS customer_profiles (
+        cust_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        demo_name TEXT,
+        customer_info TEXT,
+        clinical_summary TEXT
+    )
+    """)
+    
+    # 3. Session/Checkpoints Table (Simple version for POC)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        session_id TEXT PRIMARY KEY,
+        current_stage TEXT,
+        chat_history TEXT
+    )
+    """)
+    
+    # --- SEED DATA (The "Process Map") ---
+    # This mimics your JSON logic: Verification -> Resolution
+    sample_process = {
+        "stages": [
+            {
+                "stage_name": "Verification",
+                "objective": "Verify user identity",
+                "steps": [
+                    {"step_code": "V1", "intent": "ask_name", "utterance": "May I have your full name?"},
+                    {"step_code": "V2", "intent": "ask_dob", "utterance": "And your date of birth?"}
+                ]
+            },
+            {
+                "stage_name": "Resolution",
+                "objective": "Address security upgrade",
+                "steps": [
+                    {"step_code": "R1", "intent": "propose_upgrade", "utterance": "I see you have the basic plan. Would you like to add cameras?"}
+                ]
+            }
+        ]
+    }
+    
+    sample_customer = {
+        "name": "John Doe",
+        "plan": "Basic Security",
+        "dob": "1980-01-01"
+    }
+    
+    try:
+        cursor.execute("INSERT INTO process_maps (demo_name, process_json) VALUES (?, ?)", 
+                       ("healthcare_demo", json.dumps(sample_process)))
+        cursor.execute("INSERT INTO customer_profiles (demo_name, customer_info, clinical_summary) VALUES (?, ?, ?)", 
+                       ("healthcare_demo", json.dumps(sample_customer), "User has basic home security."))
+        conn.commit()
+        print("✅ Database Seeded.")
+    except sqlite3.IntegrityError:
+        print("ℹ️ Database already exists.")
+    finally:
+        conn.close()
+
+setup_local_db()
+
+# --- B. TOOL DEFINITIONS (Pure Python Functions) ---
+# In Vertex AI ADK, tools are just functions we bind to the agent.
+
+def get_customer_profile(demo_name: str) -> Dict[str, Any]:
+    """Fetches the customer profile and clinical summary from the database."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT customer_info, clinical_summary FROM customer_profiles WHERE demo_name=?", (demo_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return {
+            "info": json.loads(row["customer_info"]),
+            "summary": row["clinical_summary"]
+        }
+    return {"error": "Customer not found"}
+
+def get_process_map(demo_name: str) -> Dict[str, Any]:
+    """Fetches the approved process flow (stages and steps) for the agent to follow."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT process_json FROM process_maps WHERE demo_name=?", (demo_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return json.loads(row["process_json"])
+    return {"error": "Process map not found"}
+
+def log_session_state(session_id: str, stage: str, history: str):
+    """Logs the current state of the conversation to the DB."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO sessions (session_id, current_stage, chat_history) VALUES (?, ?, ?)", 
+                   (session_id, stage, history))
+    conn.commit()
+    conn.close()
+
+print("✅ Tools Defined: get_customer_profile, get_process_map, log_session_state")
+
+
+# @title 3. Define agents.py (Vertex AI Reasoning Engine)
+from vertexai.preview import reasoning_engines
+from langchain_google_vertexai import ChatVertexAI
+import json
+
+class OutreachAgent:
+    """
+    An AI Agent for Outreach Engagement in Healthcare.
+    It follows a strict Process Map to guide the conversation.
+    """
+    
+    def __init__(self, demo_name: str = "healthcare_demo"):
+        self.demo_name = demo_name
+        # We initialize Gemini using the Vertex AI ADK pattern
+        # This model will have access to our defined tools
+        self.model = reasoning_engines.Gemini(
+            model="gemini-1.5-pro",
+            temperature=0,
+            tools=[get_customer_profile, get_process_map] 
+        )
+
+    def query(self, session_id: str, user_input: str, chat_history: list = None) -> str:
+        """
+        The entry point for the Agent. 
+        In LangGraph, this was 'app.invoke'. In ADK, it is a method call.
+        """
+        if chat_history is None:
+            chat_history = []
+            
+        # 1. Fetch Context (The "Load Context" Node)
+        # We force the model to 'call' the tools to get its grounding data
+        # Note: We construct a specialized prompt that ACTS as the "Router" and "Orchestrator"
+        
+        system_prompt = f"""
+        You are an Outreach Engagement Agent acting on behalf of a Healthcare Provider.
+        
+        YOUR GOAL:
+        Follow the strict 'Process Map' for the demo '{self.demo_name}'. 
+        You must move the user through the Stages defined in that map.
+        
+        INSTRUCTIONS:
+        1. ALWAYS call `get_process_map` first to understand your stages.
+        2. ALWAYS call `get_customer_profile` to know who you are talking to.
+        3. Compare the `user_input` and `chat_history` to the Process Map stages.
+        4. Determine which Stage we are in (Verification, Resolution, etc.).
+        5. Generate the response based strictly on the 'utterance' or 'objective' defined in that Stage.
+        
+        CURRENT SESSION: {session_id}
+        """
+        
+        # 2. Invoke the Model (The "Sub-Agents" Logic)
+        # In ADK, the model acts as the orchestrator. It will:
+        # a) Decide to call tools (get_process_map)
+        # b) Execute tools (we handle this automatically in Reasoning Engine)
+        # c) Generate the final response
+        
+        response = self.model.query(
+            prompt=system_prompt,
+            messages=[
+                {"role": "user", "content": user_input}
+            ]
+        )
+        
+        # 3. Persistence (The "Checkpointer")
+        # We manually log the state after the turn
+        log_session_state(session_id, "active", json.dumps(str(response)))
+        
+        return response.text
+
+# --- 4. DEPLOYMENT (The "Managed Proof of Concept") ---
+# This creates the "Reasoning Engine" in Vertex AI. 
+# It bundles this Class, the Tools, and the dependencies into a managed service.
+
+# UNCOMMENT THE LINES BELOW TO DEPLOY TO GOOGLE CLOUD (Takes ~5 mins)
+# remote_agent = reasoning_engines.ReasoningEngine.create(
+#     OutreachAgent(demo_name="healthcare_demo"),
+#     requirements=["google-cloud-aiplatform", "langchain-core"],
+#     display_name="outreach-healthcare-poc"
+# )
+# print(f"✅ Agent Deployed! Resource Name: {remote_agent.resource_name}")
+
+# --- 5. LOCAL TESTING (Run in Notebook) ---
+print("--- Starting Local Test ---")
+local_agent = OutreachAgent(demo_name="healthcare_demo")
+
+# Simulate Turn 1
+print("\nUser: Hi, who is this?")
+response_1 = local_agent.query(session_id="test_001", user_input="Hi, who is this?")
+print(f"Agent: {response_1}")
+
+# Simulate Turn 2
+print("\nUser: I am John Doe.")
+response_2 = local_agent.query(session_id="test_001", user_input="I am John Doe", chat_history=[response_1])
+print(f"Agent: {response_2}")
+
+
+
+
+
+
+
+
 This is great. Having your actual code allows us to perform a "surgical" migration. Your current setup is a classic Stateful Multi-Agent System that relies on a centralized MySQL database for its business logic (the "process maps") and in-memory persistence for short-term chat memory.
 To move this to Google Cloud (Vertex AI/Cloud Run), we need to address three specific code-level shifts:
  * Database Strategy: Swapping mysql-connector for the cloud-sql-python-connector to handle GCP's networking.
