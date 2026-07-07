@@ -1,3 +1,126 @@
+
+import os
+import json
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from redis import Redis
+from langgraph.checkpoint.redis import RedisSaver
+
+# Import our compiled LangGraph agent from the previous file
+from graph import fo_agent 
+
+# ==========================================
+# 1. Monolithic Configuration & Setup
+# ==========================================
+
+app = FastAPI(title="Smart Agent Assist - Front Office Intake API")
+
+# Allow your HTML frontend to communicate with this backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, restrict this to your actual domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Set up Redis connection for LangGraph State Checkpointing
+# It defaults to localhost for your local testing
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_conn = Redis.from_url(REDIS_URL)
+checkpointer = RedisSaver(redis_conn)
+
+# ==========================================
+# 2. Request Schemas
+# ==========================================
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+
+class SkipUploadRequest(BaseModel):
+    session_id: str
+
+# ==========================================
+# 3. API Endpoints
+# ==========================================
+
+@app.post("/api/chat")
+async def chat_with_agent(request: ChatRequest):
+    """
+    Phase 1 Endpoint: Handles standard conversational text.
+    """
+    config = {"configurable": {"thread_id": request.session_id}}
+    
+    # Format the user's message for LangGraph
+    user_input = {"chat_history": [{"role": "user", "content": request.message}]}
+    
+    try:
+        # Run the LangGraph agent
+        # The checkpointer automatically loads the past state from Redis
+        final_state = fo_agent.invoke(user_input, config=config, checkpointer=checkpointer)
+        
+        # Extract the latest response from the AI
+        bot_response = final_state["chat_history"][-1]["content"]
+        is_ready_for_evidence = final_state.get("ready_for_evidence", False)
+        
+        return {
+            "response": bot_response,
+            "phase": "evidence" if is_ready_for_evidence else "text"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/upload")
+async def upload_evidence(
+    session_id: str = Form(...),
+    files: list[UploadFile] = File(...)
+):
+    """
+    Phase 2 Endpoint: Handles the Multimodal Document Uploads.
+    """
+    if len(files) > 3:
+        raise HTTPException(status_code=400, detail="Maximum of 3 documents allowed.")
+
+    config = {"configurable": {"thread_id": session_id}}
+    
+    # Here you would normally convert the files to base64 to pass to the Vision LLM
+    # For this architecture, we pass the flag to the graph
+    upload_input = {
+        "uploaded_documents": [file.filename for file in files],
+        "skipped_upload": False
+    }
+    
+    final_state = fo_agent.invoke(upload_input, config=config, checkpointer=checkpointer)
+    bot_response = final_state["chat_history"][-1]["content"]
+    
+    return {"response": bot_response, "is_complete": final_state.get("is_complete", False)}
+
+@app.post("/api/skip-evidence")
+async def skip_evidence_upload(request: SkipUploadRequest):
+    """
+    Handles the scenario where the user clicks 'Skip' during Phase 2.
+    Triggers the risk warning in the graph.
+    """
+    config = {"configurable": {"thread_id": request.session_id}}
+    skip_input = {"skipped_upload": True}
+    
+    final_state = fo_agent.invoke(skip_input, config=config, checkpointer=checkpointer)
+    bot_response = final_state["chat_history"][-1]["content"]
+    
+    return {"response": bot_response, "is_complete": final_state.get("is_complete", False)}
+
+# Run the app locally if executed directly
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+
+
 That makes complete business sense. In the real world of chargebacks, raising a "Goods Not Received" or "Not As Described" dispute without any proof almost guarantees the card network or merchant will reject it.
 Because the FO Agent is acting under Tier A governance, it should absolutely warn the customer about this risk before letting them proceed empty-handed.
 We will build a "Skip Warning" directly into the graph. If the state detects the user clicked "Skip" during the Evidence phase, the agent will pause the handoff and say: *"Just a heads up—without uploading evidence like an invoice or tracking number, your dispute is much more likely to be declined by the merchant. Are you sure you want to proceed without documents?"*
