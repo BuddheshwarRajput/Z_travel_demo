@@ -1,86 +1,20 @@
-import os
-import json
-import requests
-from typing import Dict, Any
-from dotenv import load_dotenv
-from fastmcp import FastMCP
-
-# load_dotenv()
-
-API_URL = "https://ivr-uat.payflex.com/api/Employee/FetchEmployeeAccounts"
-PARTNER_ID = "458BF15F-D45D-4385-B3EA-9903C76CF411"
-CONTENT_TYPE = "application/json"  # FIX: Added '='
-PORT = 8002                        # FIX: Added '='
-HOST = "0.0.0.0"
-
-if not API_URL:
-    raise ValueError("CRITICAL: 'AUTH_API_URL' environment variable is missing!")
-
-mcp = FastMCP("Inspira Auth Server")
-
-def _tool_result(response: Dict[str, Any], state_update: Dict[str, Any] = None) -> str:
-    """FIX: Re-added the helper to wrap the return payload for LangGraph."""
-    result = {"response": response, "state_update": state_update or {}}
-    return json.dumps(result)
-
-@mcp.tool()
-def verify_customer_identity(ssn_or_member_id: str, zip_code: str, date_of_birth: str) -> str:
-    """Verifies a customer using EITHER their SSN or Member ID, plus Zip and DOB."""
-    
-    headers = {
-        "PartnerId": PARTNER_ID,
-        "Content-Type": CONTENT_TYPE
-    }
-
-    # SUCCESS: You successfully made this dynamic!
-    payload = {
-        "lastFourSsnOrMemberId": ssn_or_member_id,
-        "zipCode": zip_code,
-        "dateOfBirth": date_of_birth
-    }
-
-    try:
-        response = requests.post(API_URL, json=payload, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            accounts = data.get("accounts", [])
-            
-            # FIX: Safe check in case the accounts list is empty
-            if not accounts:
-                return _tool_result(
-                    response={"status": "failure", "message": "Identity verified, but no active accounts found."},
-                    state_update={"authentication_status": False}
-                )
-                
-            account_info = accounts[0]
-            
-            return _tool_result(
-                response={
-                    "status": "success",
-                    "member_id": payload["lastFourSsnOrMemberId"],
-                    "employer_name": account_info.get("employerName"),
-                    "available_balance": account_info.get("availableBalance")
-                },
-                # FIX: Properly segregating state updates for LangGraph
-                state_update={
-                    "authentication_status": True,
-                    "member_id": payload["lastFourSsnOrMemberId"]
-                }
-            )
-        else:
-            return _tool_result(
-                response={"status": "failure", "message": f"Identity verification failed. HTTP {response.status_code}"},
-                state_update={"authentication_status": False}
-            )
-            
-    except Exception as e:
-        return _tool_result(
-            response={"status": "error", "message": f"API Connection Error: {str(e)}"},
-            state_update={"authentication_status": False}
-        )
-
-if __name__ == "__main__":
-    print("Starting Inspira MCP Server via SSE transport on port 8002...")
-    # FIX: Using the native fastmcp transport to avoid the 404/400 bug
-    mcp.run(transport="sse", host=HOST, port=PORT)
+That is a fantastic question, and the sample image you provided (the GadgetGalaxy Order Confirmation for $749.99) perfectly illustrates the exact challenge we face.
+To answer your questions directly: **Yes, the agent absolutely has the capability to "see" these documents, and Yes, it is strictly required for the Front Office.**
+Here is how this aligns with your BRD and how we architect it to handle the unpredictable merchant formats.
+### 1. Why it is Required for the Front Office
+According to your BRD, for Scenario 3 (Goods Not Received), the Front Office intake stage explicitly includes an **"Evidence"** action. The FO agent is required to provide a secure document link and ingest order confirmations, tracking information, and receipts.
+If the FO agent does not collect and extract this data at the front door, the Back Office Swarm will not have the extracted_metadata (like the order date, amount, merchant, and tracking number) it needs to run its deterministic scoring rules.
+### 2. Solving the "Changing Format" Problem (Multimodal AI)
+You pointed out a massive pain point in traditional banking: every merchant (Amazon, Walmart, GadgetGalaxy) formats their receipts differently.
+In the past, banks used rigid OCR (Optical Character Recognition) templates. If the merchant moved the "Total Amount" to the left side of the page, the OCR would break.
+We do not have to worry about that. Because we are making the platform cloud-agnostic and using modern LLMs (like Google Gemini 1.5 or Amazon Bedrock's Claude 3.5 Sonnet), we are utilizing **Multimodal AI**.
+ * **How it works:** When the customer uploads that GadgetGalaxy image, your LangGraph agent doesn't use a template. It passes the raw image bytes directly to the LLM alongside the system prompt.
+ * **Semantic Understanding:** The LLM "looks" at the image just like a human does. It understands that "$749.99" is the total amount, "GG-77231" is the order number, and "2026-05-10" is the date, regardless of where they are placed on the screen.
+### 3. How This Changes Our LangGraph Agent
+To incorporate this into the standalone FO agent we are currently building, we will make a small adjustment to our extract_information node:
+ * **Image Ingestion:** When the user uploads a file, the front-end passes the Base64 encoded image to the LangGraph state.
+ * **Tool Calling with Vision:** We instruct the LLM: *"If an image is provided in the state, analyze it to extract the Merchant Name, Disputed Amount, and Expected Delivery Date. Use the update_state tool to save these values."*
+ * **Skipping Questions:** If the customer uploads that GadgetGalaxy receipt right at the beginning of the chat, the LLM will instantly extract the $749.99 and the merchant name. Because those fields in the Redis schema are no longer null, the AI will dynamically skip asking the customer for the amount and the merchant name, creating a magically fast user experience!
+**Here is my follow-up architectural question for you regarding this document extraction:**
+According to the BRD, the Back Office uses a document metadata match flag to check if the uploaded receipt matches the actual transaction ledger.
+If your FO agent extracts $749.99 from the GadgetGalaxy receipt, but the customer typed in the chat, *"I am disputing $1,000"*, **how should the FO agent handle this discrepancy?** Should the LangGraph agent politely confront the customer about the mismatch while they are still in the chat, or should it silently log the discrepancy into Redis and let the Back Office human investigator deal with it later?
