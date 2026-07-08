@@ -1,3 +1,50 @@
+from langchain_core.messages import ToolMessage
+
+def triage_and_text_gathering(state: FOAgentState):
+    """Gathers text facts. If facts are found, executes the Pydantic tool."""
+    
+    state_as_string = str(state.get("extracted_data", {}))
+    
+    formatted_prompt = fo_intake_prompt.format_messages(
+        current_state=state_as_string,
+        chat_history=state.get("chat_history", [])
+    )
+    
+    # 1. Invoke LLM and always append its response to the history
+    response = llm_with_tools.invoke(formatted_prompt)
+    messages_to_add = [response]
+    
+    # 2. Safely check if the LLM decided to use a tool
+    tool_calls = getattr(response, "tool_calls", [])
+    
+    if tool_calls:
+        current_data = state.get("extracted_data", {})
+        
+        for tool_call in tool_calls:
+            if tool_call["name"] == "update_dispute_state":
+                # Update the state dictionary with extracted facts
+                current_data.update(tool_call["args"])
+                
+                # Append the ToolMessage so the LLM knows it succeeded
+                tool_msg = ToolMessage(
+                    content="State updated successfully.", 
+                    tool_call_id=tool_call["id"], 
+                    name=tool_call["name"]
+                )
+                messages_to_add.append(tool_msg)
+                
+        # Return both the updated history AND the updated data dictionary
+        return {"chat_history": messages_to_add, "extracted_data": current_data}
+
+    # If it didn't use a tool, just return the AI's text response
+    return {"chat_history": messages_to_add}
+
+
+
+
+
+
+
 import os
 import boto3
 from dotenv import load_dotenv
