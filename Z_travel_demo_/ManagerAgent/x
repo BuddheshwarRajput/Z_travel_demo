@@ -1,3 +1,95 @@
+The reason Claude wrapped up the conversation itself and completely bypassed the document upload is a fundamental LangGraph execution quirk.
+When a graph hits END, the run finishes. In the previous setup, when you supplied your next message, the graph just started from the absolute beginning (text_phase) again, so it completely forgot it was supposed to wait for evidence.
+We fix this by adding a **Conditional Entry Point**. This tells the graph: *"If the state says we are ready for evidence, skip the text phase and boot directly into the process_evidence node!"* Here are the short, sharp code changes to implement this fix, along with the strict schema routing and dynamic HTML upload logic we brainstormed.
+### 1. Update state.py
+Add these specific missing tracking flags to your FOAgentState so the graph knows exactly where it is in the upload process.
+```python
+class FOAgentState(TypedDict):
+    # ... keep your existing fields ...
+    
+    # Add these missing evidence flags
+    ready_for_evidence: bool
+    skipped_upload: bool
+    skip_warned: bool
+    uploaded_documents: List[dict]
+
+```
+### 2. Update graph.py
+Replace your existing functions and entry point with these updated blocks to enforce the exact business rules from your HTML.
+**Update route_from_text_phase (Strict Schema Routing):**
+```python
+def route_from_text_phase(state: FOAgentState):
+    """Checks if ALL required schema fields are filled before moving to Evidence."""
+    data = state.get("extracted_data", {})
+    dtype = data.get("dispute_type")
+    
+    is_ready = False
+    
+    # Step A: Strict Routing (Requires all GNR fields before pivoting)
+    if dtype == "goods_not_received":
+        if data.get("disputed_amount") and data.get("expected_delivery_date") and data.get("merchant_contacted") is not None:
+            is_ready = True
+    elif dtype and data.get("disputed_amount"):
+        is_ready = True # Fallback for other scenarios
+
+    # Only route to evidence if we haven't already pivoted
+    if is_ready and not state.get("ready_for_evidence"):
+        return "ask_for_evidence"
+
+    last_message = state["chat_history"][-1]
+    is_tool_obj = getattr(last_message, "type","") == "tool"
+    is_tool_dict = isinstance(last_message, dict) and last_message.get("type") == "tool"
+
+    if is_tool_obj or is_tool_dict: 
+        return "triage_and_text_gathering"
+
+    return END
+
+```
+**Update ask_for_evidence (Dynamic Evidence HTML mapping):**
+```python
+def ask_for_evidence(state: FOAgentState):
+    """The pivot node. Uses specific HTML messages based on dispute type."""
+    dtype = state.get("extracted_data", {}).get("dispute_type")
+    
+    # Step B: Dynamic HTML Prompts
+    if dtype == "unauthorized":
+        msg = "I have secured your account. No documents are needed for this fraud claim."
+        # Auto-skip the upload phase for Scenario 1
+        return {"chat_history": [{"role": "assistant", "content": msg}], "ready_for_evidence": True, "skipped_upload": True}
+    elif dtype == "not_as_described":
+        msg = "Please upload photos of the item and your receipt. (Type file path or 'skip')"
+    elif dtype == "duplicate_charge":
+        msg = "Please upload your receipt and a bank statement showing both charges. (Type file path or 'skip')"
+    else:
+        msg = "To support your claim, please upload your order confirmation or tracking info. (Type file path or 'skip')"
+
+    return {"chat_history": [{"role": "assistant", "content": msg}], "ready_for_evidence": True}
+
+```
+**Add the Conditional Entry Point (Bottom of graph.py):**
+Replace your current workflow.set_entry_point("text_phase") with this logic so the graph resumes in the correct phase:
+```python
+# Step C: The Resumption Router
+def route_start(state: FOAgentState):
+    """Determines where the graph should start on every new chat turn."""
+    if state.get("ready_for_evidence"):
+        return "process_evidence"
+    return "text_phase"
+
+# Replace set_entry_point with this:
+workflow.set_conditional_entry_point(route_start, {
+    "process_evidence": "process_evidence",
+    "text_phase": "text_phase"
+})
+
+```
+Run test_agent.py again. Because we added the strict schema checks, Claude will be forced to gather the delivery date and merchant contact *before* triggering the dynamic evidence pivot. Let me know what it outputs!
+
+
+
+
+
 from langchain_core.messages import ToolMessage
 
 def triage_and_text_gathering(state: FOAgentState):
