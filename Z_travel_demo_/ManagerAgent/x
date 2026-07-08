@@ -1,3 +1,42 @@
+You are 100% correct. Please **DO NOT** delete your original data points. If you delete them, your Pydantic schemas and future Back Office logic will completely break.
+In my previous message, I gave a shortened snippet just to highlight the missing extracted_data line, but you need the whole merged class.
+Here is the **exact, unified FOAgentState** that keeps all your BRD fields safe, changes the amount to str (to match our crash-fix earlier), and includes the required LangGraph router flags:
+```python
+class FOAgentState(TypedDict):
+    """The master state object managed by LangGraph and stored in Redis."""
+    # System Tracking
+    session_id: str
+    intake_assertion_timestamp: str
+    chat_history: Annotated[list, add_messages]
+    
+    # 🟢 THE LLM's BRAIN: Required so the Pydantic tool doesn't throw data in the trash
+    extracted_data: dict 
+    
+    # Core BRD Data Points
+    customer_statement: Optional[str]
+    dispute_type: Optional[str]
+    linked_transaction_ids: List[str]
+    disputed_amount: Optional[str]  # Changed to str to prevent Pydantic float crashes
+    
+    # Scenario-Specific Schemas
+    unauthorized_details: Optional[UnauthorizedDisputeSchema]
+    gnr_details: Optional[GoodsNotReceivedSchema]
+    
+    # Graph Control / Evidence Flags
+    intent_locked: bool
+    ready_for_handoff: bool
+    ready_for_evidence: bool
+    skipped_upload: bool
+    skip_warned: bool
+    uploaded_documents: List[dict]
+    is_complete: bool
+
+```
+Just replace your current FOAgentState in state.py with this exact block. Run test_agent.py again, and you should see the [SYSTEM LOG] successfully populate with your data!
+
+
+
+
 This is a classic "LLM Hijack." Claude is acting like a highly intelligent, empathetic human, which is great, but it completely ignored the strict LangGraph workflow.
 Because Claude wrapped up the chat organically (*"Your case will be reviewed..."*), the graph never actually triggered the ask_for_evidence node, which means it never triggered the handoff node, which is why your JSON file was never created!
 ### Why did Claude hijack the flow?
