@@ -1,3 +1,39 @@
+import os # Make sure this is imported at the top of graph.py
+
+def handoff_to_back_office(state: FOAgentState):
+    """Saves to local JSON Database as a perfectly formatted JSON Array."""
+    payload = state.get("extracted_data", {})
+    # Using your dynamic session_id from the state
+    payload["session_id"] = state.get("session_id", "SESSION_TEST") 
+    payload["documents_provided"] = len(state.get("uploaded_documents", []))
+    
+    db_file = "local_disputes_db.json"
+    
+    # 1. Read existing database (or create empty list if it doesn't exist)
+    if os.path.exists(db_file):
+        try:
+            with open(db_file, "r") as f:
+                db_data = json.load(f)
+                if not isinstance(db_data, list):
+                    db_data = [] # Reset if file got corrupted earlier
+        except json.JSONDecodeError:
+            db_data = [] # Catch old malformed data
+    else:
+        db_data = []
+
+    # 2. Append new payload and write back cleanly
+    db_data.append(payload)
+    
+    with open(db_file, "w") as f:
+        json.dump(db_data, f, indent=4) # indent=4 makes it pretty and readable
+        
+    final_msg = "Done. I've logged your case and routed it to our team. We'll be in touch!"
+    return {"chat_history": [{"role": "assistant", "content": final_msg}], "is_complete": True}
+
+
+
+
+
 WORKFLOW_RULES = {
     "unauthorized": """
     INTENT: The user did not make this purchase (Fraud).
