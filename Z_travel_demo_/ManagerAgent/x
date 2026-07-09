@@ -1,3 +1,117 @@
+You have an incredible eye for detail. This is exactly what "hardening" an AI agent looks like.
+When we look at the HTML chat versus our terminal chat side-by-step, the gaps become obvious:
+ 1. **Wrong Amount Gap:** In the HTML, the bank needs to know exactly how much money the user *actually wants to claim back* (e.g., "Do you want to dispute the whole $500, or just the $400 difference?"). Our agent never asked that.
+ 2. **Goods Not Received (GNR) Gap:** In the HTML, the bank needs to know if the delivery date *has already passed*, if they received *a partial order*, and whether they want a *refund vs. waiting*. Our agent skipped all of this and just asked for the price.
+Let's do exactly what you suggested: we will master these two intents right now. We need to expand the tools, strictly update the prompt steps, and update the graph gatekeeper.
+Here are the exact changes to make these two paths completely mirror your HTML.
+### 1. Update tools.py (Adding the missing HTML fields)
+Replace the update_wrong_amount_state and update_gnr_state functions with these expanded versions.
+```python
+@tool
+def update_wrong_amount_state(
+    expected_amount: str = None,
+    disputed_amount: str = None,
+    difference_reason: str = None,
+    merchant_contacted: bool = None,
+    final_claim_amount: str = None # NEW: "How much would you like to dispute?"
+):
+    """Use this tool ONLY when the customer was charged once, but the amount is incorrect."""
+    return {
+        "dispute_type": "wrong_amount",
+        "expected_amount": expected_amount,
+        "disputed_amount": disputed_amount,
+        "difference_reason": difference_reason,
+        "merchant_contacted": merchant_contacted,
+        "final_claim_amount": final_claim_amount
+    }
+
+@tool
+def update_gnr_state(
+    item_type: str = None, 
+    expected_delivery_date: str = None,
+    date_has_passed: bool = None, # NEW: "Has that delivery date already passed?"
+    merchant_contacted: bool = None,
+    partial_order_received: bool = None, # NEW: "Have you received any part of the order?"
+    resolution_preference: str = None # NEW: "Wait for order or request refund?"
+):
+    """Use this tool ONLY for Goods or Services Not Received."""
+    return {
+        "dispute_type": "goods_not_received",
+        "item_type": item_type,
+        "expected_delivery_date": expected_delivery_date,
+        "date_has_passed": date_has_passed,
+        "merchant_contacted": merchant_contacted,
+        "partial_order_received": partial_order_received,
+        "resolution_preference": resolution_preference
+    }
+
+```
+### 2. Update prompts.py (Enforcing the new strict HTML steps)
+Replace the wrong_amount and goods_not_received blocks in your WORKFLOW_RULES dictionary with these exact steps. Notice how I added a strict rule to prevent the AI from combining questions.
+```python
+    "wrong_amount": """
+    INTENT: Incorrect Amount Charged
+    GOAL: Identify the discrepancy between the expected and actual price.
+    
+    REQUIRED STEPS (STRICTLY ask ONE question per turn based on what is missing):
+    1. Ask what amount they originally expected to pay.
+    2. Ask what amount was actually charged to their account.
+    3. Ask if they know why the amount was different (e.g., overcharged with no explanation).
+    4. Ask if they have contacted the merchant about the difference.
+       - IF they have not contacted the merchant: Gently suggest that merchants can often correct a billing error quickly, but ask if they want to continue the dispute.
+    5. Finally, ask exactly how much of the amount they would actually like to dispute.
+    """,
+
+    "goods_not_received": """
+    INTENT: Goods or Services Not Received
+    GOAL: Gather delivery facts to prove the merchant failed to provide the item.
+    
+    REQUIRED STEPS (STRICTLY ask ONE question per turn based on what is missing):
+    1. Ask if the dispute is for a physical item or a digital service.
+    2. Ask if they were given an expected delivery date.
+    3. Ask if that expected delivery date has already passed.
+    4. Ask if they have attempted to contact the merchant about the order.
+       - IF they have not contacted the merchant: Gently suggest that contacting them first usually helps, but ask if they want to continue the dispute.
+    5. Ask if they have received any part of the order at all.
+    6. Finally, ask if they would like to keep waiting for the order, or request their money back (a refund).
+    """,
+
+```
+*(Also, inside BASE_SYSTEM_PROMPT in prompts.py, change Rule 2 to say: 2. Ask EXACTLY ONE short question per turn. NEVER ask two questions in the same message.)*
+### 3. Update graph.py (Hold the Gate Open)
+Because we added more questions, we have to tell LangGraph to keep routing back to the LLM until these new specific questions are answered.
+Update the Gatekeeper conditions inside route_from_text_phase:
+```python
+    # 3. Goods Not Received Validation
+    elif dtype == "goods_not_received":
+        if (data.get("item_type") and 
+            data.get("expected_delivery_date") and 
+            data.get("date_has_passed") is not None and 
+            data.get("merchant_contacted") is not None and 
+            data.get("partial_order_received") is not None and 
+            data.get("resolution_preference")):
+            is_ready = True
+            
+    # 5. Wrong Amount Validation
+    elif dtype == "wrong_amount":
+        if (data.get("disputed_amount") and 
+            data.get("expected_amount") and 
+            data.get("difference_reason") and 
+            data.get("merchant_contacted") is not None and 
+            data.get("final_claim_amount")):
+            is_ready = True
+
+```
+### Why this fixes it completely:
+By expanding the Pydantic schema in tools.py, we forced LangGraph to realize the job isn't done.
+By expanding the numbered lists in prompts.py, we gave Claude the exact script from your HTML.
+Run the goods_not_received or wrong_amount test again in your terminal. You will see Ethan slow down, ask only one question at a time, and hit every single step from your HTML document before moving to the document upload! Let me know how the test looks!
+
+
+
+
+
+
 You are absolutely right to call this out. The difference is huge, and I missed a massive chunk of your HTML logic for this specific path!
 Here is exactly why the agent rushed through it:
  1. **The Tool was too small:** We only gave the wrong_amount tool two variables: expected_amount and disputed_amount.
