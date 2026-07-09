@@ -1,3 +1,91 @@
+This silence/empty response happens because of a very specific tool-mismatch bug in our newly refactored code.
+### Why is it breaking right now?
+ 1. You typed: *"I was charged the wrong amount"*.
+ 2. The agent matched this to a **Billing Error / Processing Error** intent.
+ 3. However, look at the tools.py we just built in our last step: we only created update_fraud_state, update_cancellation_state, and update_gnr_state. We completely forgot to define a tool or a prompt key for **wrong_amount** or **duplicate_charge**!
+ 4. Because the model didn't have a specific billing tool, it hit an empty routing logic path, called no tool, and returned a blank string execution loop.
+Let's clean this up instantly with a few specific line updates to capture processing errors correctly.
+### 1. Update tools.py
+Add this missing billing tool at the bottom of your file so the agent has a structural place to save this exact scenario:
+```python
+@tool
+def update_billing_state(
+    charge_count: int = None,
+    amount_variation: str = None, # e.g., 'identical', 'different'
+    expected_amount: str = None,
+    disputed_amount: str = None
+):
+    """Use this tool ONLY for duplicate charges or being charged the wrong amount."""
+    return {
+        "dispute_type": "incorrect_amount",
+        "charge_count": charge_count,
+        "amount_variation": amount_variation,
+        "expected_amount": expected_amount,
+        "disputed_amount": disputed_amount
+    }
+
+```
+### 2. Update graph.py
+We need to bind this tool to the model and map it in the state processor.
+**Line Change 1 (Tool Binding near top):**
+```python
+from tools import update_fraud_state, update_cancellation_state, update_gnr_state, update_billing_state
+
+llm_with_tools = get_llm().bind_tools([
+    update_fraud_state, 
+    update_cancellation_state, 
+    update_gnr_state,
+    update_billing_state # <-- Add this here
+])
+
+```
+**Line Change 2 (Inside triage_and_text_gathering):**
+Update the tool check array to catch the billing node tool call:
+```python
+    if tool_calls:
+        for tool_call in tool_calls:
+            if tool_call["name"] in ["update_fraud_state", "update_cancellation_state", "update_gnr_state", "update_billing_state"]:
+                current_data.update(tool_call["args"])
+                
+                if tool_call["name"] == "update_fraud_state": current_data["dispute_type"] = "unauthorized"
+                elif tool_call["name"] == "update_cancellation_state": current_data["dispute_type"] = "cancelled_booking_charged"
+                elif tool_call["name"] == "update_gnr_state": current_data["dispute_type"] = "goods_not_received"
+                elif tool_call["name"] == "update_billing_state": current_data["dispute_type"] = "incorrect_amount" # <-- Add this mapping
+
+```
+**Line Change 3 (Inside route_from_text_phase Gatekeeper):**
+Add the conditional gate check for this intent:
+```python
+    # 4. Incorrect Amount Validation 
+    elif dtype == "incorrect_amount":
+        if data.get("disputed_amount") and data.get("expected_amount"):
+            is_ready = True
+
+```
+### 3. Update prompts.py
+Change the dictionary key name inside WORKFLOW_RULES from "duplicate_charge" to **"incorrect_amount"** so it matches the tool classification exactly:
+```python
+    "incorrect_amount": """
+    INTENT: Incorrect Amount / Duplicate Charge
+    GOAL: Identify the billing or amount error.
+    
+    REQUIRED STEPS (Complete sequentially based on what is missing):
+    1. Ask what they expected to be charged versus what they were actually charged.
+    2. Ask exactly how many times this specific charge appeared on their account.
+    3. Ask if the duplicate amounts were exactly identical or slightly different.
+    """,
+
+```
+Save these files and restart your test_agent.py script. The "Triage" fallback will catch your query, instantly select the update_billing_state tool, and pass the rules straight down without throwing a blank message error!
+
+
+
+
+
+
+
+
+
 You have made two excellent architectural decisions.
  1. **Delegating the "Block Card" action to the Back Office** is the absolute safest enterprise pattern. Front Office LLMs should *never* have direct API write-access to core banking systems. Gathering consent and passing it via JSON to a deterministic Back Office system is perfect.
  2. **Using Intent-Specific Tools** completely removes the LLM's ability to hallucinate the wrong questions, because it simply won't have the parameters available to make a mistake.
