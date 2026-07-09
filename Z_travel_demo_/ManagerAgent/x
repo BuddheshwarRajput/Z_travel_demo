@@ -1,3 +1,137 @@
+I know exactly why Ethan gave you the "silent treatment." It’s actually a brilliant showcase of how LangGraph handles errors in the background.
+### Why did the agent go completely blank?
+When you typed *"I was charged the wrong amount"*, Claude correctly guessed it needed to use the new update_wrong_amount_state tool. It output a system command to trigger the tool, **which meant its text response was intentionally blank.**
+However, in our graph.py file, we didn't add the new tool names to the if statement!
+Because graph.py didn't recognize the new tool's name, it completely ignored Claude's action, failed to update the state, and ended the chat loop prematurely. Your terminal printed Claude's blank text response, leaving you hanging.
+Here are the exact three blocks of code to fix this broken link so the Triage logic flows perfectly.
+### 1. Update tools.py (Fixing the Parameters)
+We need to make sure the parameter names inside the new tools perfectly match what our graph is looking for. Replace the old billing tool with these two exact ones:
+```python
+@tool
+def update_duplicate_state(
+    charge_count: int = None,
+    amounts_are_identical: bool = None,
+    disputed_amount: str = None
+):
+    """Use this tool ONLY when the customer was charged multiple times for the same transaction."""
+    return {
+        "dispute_type": "duplicate_charge",
+        "charge_count": charge_count,
+        "amounts_are_identical": amounts_are_identical,
+        "disputed_amount": disputed_amount
+    }
+
+@tool
+def update_wrong_amount_state(
+    expected_amount: str = None,
+    disputed_amount: str = None # <-- Ensure this says disputed_amount, not actual_charged_amount
+):
+    """Use this tool ONLY when the customer was charged once, but the amount is incorrect."""
+    return {
+        "dispute_type": "wrong_amount",
+        "expected_amount": expected_amount,
+        "disputed_amount": disputed_amount
+    }
+
+```
+### 2. Update graph.py (The Interceptor)
+Replace your entire triage_and_text_gathering function. This explicitly catches the new tool names so Claude isn't ignored.
+```python
+def triage_and_text_gathering(state: FOAgentState):
+    """Gathers text facts. Dynamically injects workflow rules based on current state."""
+    current_data = state.get("extracted_data", {})
+    dtype = current_data.get("dispute_type")
+    
+    active_rules = WORKFLOW_RULES.get(dtype, WORKFLOW_RULES["triage"])
+    
+    formatted_prompt = fo_intake_prompt.format_messages(
+        current_state=str(current_data),
+        workflow_rules=active_rules,
+        chat_history=state.get("chat_history", [])
+    )
+    
+    response = llm_with_tools.invoke(formatted_prompt)
+    messages_to_add = [response]
+    
+    tool_calls = getattr(response, "tool_calls", [])
+    if tool_calls:
+        for tool_call in tool_calls:
+            # 🟢 WE MUST EXPLICITLY ALLOW ALL 5 TOOLS HERE
+            valid_tools = [
+                "update_fraud_state", 
+                "update_cancellation_state", 
+                "update_gnr_state", 
+                "update_duplicate_state", 
+                "update_wrong_amount_state"
+            ]
+            if tool_call["name"] in valid_tools:
+                current_data.update(tool_call["args"])
+                
+                if tool_call["name"] == "update_fraud_state": current_data["dispute_type"] = "unauthorized"
+                elif tool_call["name"] == "update_cancellation_state": current_data["dispute_type"] = "cancelled_booking_charged"
+                elif tool_call["name"] == "update_gnr_state": current_data["dispute_type"] = "goods_not_received"
+                elif tool_call["name"] == "update_duplicate_state": current_data["dispute_type"] = "duplicate_charge"
+                elif tool_call["name"] == "update_wrong_amount_state": current_data["dispute_type"] = "wrong_amount"
+
+                tool_msg = ToolMessage(
+                    content="State updated successfully.", 
+                    tool_call_id=tool_call["id"], 
+                    name=tool_call["name"]
+                )
+                messages_to_add.append(tool_msg)
+                
+        return {"chat_history": messages_to_add, "extracted_data": current_data}
+
+    return {"chat_history": messages_to_add}
+
+```
+*(Note: Don't forget to update your bind_tools array at the top of graph.py to import and bind these two new tools too!)*
+### 3. Update graph.py (The Router Gatekeeper)
+Finally, ensure the graph knows when the new schemas are complete so it can move to the evidence phase. Replace route_from_text_phase with this block:
+```python
+def route_from_text_phase(state: FOAgentState):
+    """Checks if the SPECIFIC intent schema is completely filled before moving on."""
+    data = state.get("extracted_data", {})
+    dtype = str(data.get("dispute_type", "")).lower()
+    
+    print(f"\n⚙️ [SYSTEM LOG] Extracted Data: {json.dumps(data)}")
+    is_ready = False
+    
+    if dtype == "unauthorized":
+        if data.get("block_card_consent") is not None and data.get("card_in_possession") is not None:
+            is_ready = True
+    elif dtype == "cancelled_booking_charged":
+        if data.get("disputed_amount") and data.get("has_cancellation_proof") is not None:
+            is_ready = True
+    elif dtype == "goods_not_received":
+        if data.get("disputed_amount") and data.get("expected_delivery_date"):
+            is_ready = True
+    elif dtype == "duplicate_charge":
+        if data.get("disputed_amount") and data.get("charge_count"):
+            is_ready = True
+    elif dtype == "wrong_amount":
+        if data.get("disputed_amount") and data.get("expected_amount"):
+            is_ready = True
+
+    if is_ready and not state.get("ready_for_evidence"):
+        return "ask_for_evidence"
+        
+    last_message = state["chat_history"][-1]
+    is_tool_obj = getattr(last_message, "type", "") == "tool"
+    is_tool_dict = isinstance(last_message, dict) and last_message.get("type") == "tool"
+
+    if is_tool_obj or is_tool_dict: 
+        return "triage_and_text_gathering"
+
+    return END
+
+```
+Save all three files and run test_agent.py again. When you type *"I was charged the wrong amount"*, the Triage prompt will hit the new tool, update the JSON perfectly, load the Wrong Amount prompt, and finally ask you: *"What did you expect to pay?"*
+
+
+
+
+
 You are absolutely right, and honestly, your intuition here is better than my previous suggestion.
 Yes, we **can** and **should** make them separate intents. Grouping "Duplicate Charge" and "Wrong Amount" together was a shortcut on my part, but splitting them is the much better architectural choice.
 Here is why your approach is better:
