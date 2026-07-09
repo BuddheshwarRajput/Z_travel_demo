@@ -1,3 +1,44 @@
+WORKFLOW_RULES = {
+    "unauthorized": """
+    INTENT: The user did not make this purchase (Fraud).
+    REQUIRED STEPS:
+    1. Check if they still have the physical card in their possession.
+    2. Check if they shared their PIN, OTP, or account details with anyone recently.
+    3. Check if they recognize the merchant name at all.
+    - If they answer a question, use the tool to save it, and move to the next missing piece.
+    - DO NOT ask for documents or receipts (fraud does not require them).
+    """,
+    
+    "goods_not_received": """
+    INTENT: The user authorized the charge, but did not get the item/service.
+    REQUIRED STEPS:
+    1. Ask if this was for a physical item or a digital service.
+    2. Ask what the exact expected delivery date was.
+    3. Ask if they have attempted to contact the merchant. If they haven't, strongly suggest they do so first, but allow them to proceed if they insist.
+    - Ask only ONE missing item at a time.
+    """,
+    
+    "duplicate_charge": """
+    INTENT: The user was charged multiple times for a single purchase.
+    REQUIRED STEPS:
+    1. Ask exactly how many times the charge appeared.
+    2. Ask if the amounts were identical or slightly different.
+    - Ask only ONE missing item at a time.
+    """,
+
+    # 🟢 ADD THIS FALLBACK FOR TERMINAL TESTING
+    "triage": """
+    INTENT: UNKNOWN.
+    REQUIRED STEPS:
+    1. Ask the customer briefly what went wrong with their transaction.
+    2. Once they explain, use the tool to save the `dispute_type` (e.g., 'unauthorized', 'goods_not_received', or 'duplicate_charge').
+    """
+}
+
+
+
+
+
 from prompts import fo_intake_prompt, WORKFLOW_RULES  # Make sure to import WORKFLOW_RULES
 
 def triage_and_text_gathering(state: FOAgentState):
