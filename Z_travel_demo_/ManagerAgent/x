@@ -1,3 +1,84 @@
+This is a classic "LLM Stranded" error, and I know exactly why it happened. **It is entirely my fault for omitting a variable in the last code block I gave you!**
+### Why did the agent hallucinate the ending?
+ 1. **The Missing Tool Variable:** In my last message, I forgot to add disputed_amount to the update_gnr_state tool.
+ 2. **The Gatekeeper was blocked:** In graph.py, our gatekeeper was programmed to wait until *every single variable* was filled out. Because the tool couldn't save the amount, the gatekeeper never saw a "100% complete" state, so it refused to let the conversation move to the Evidence phase.
+ 3. **The LLM got stranded:** Ethan reached the end of his script. Because the gatekeeper wouldn't let him leave, he panicked and started ad-libbing a fake ending (*"Your case has been recorded... Is there anything else?"*) instead of triggering the document upload.
+To fix this, we need to ensure the tool can save the amount, the prompt explicitly asks for it, and the gatekeeper routes properly.
+Here are the exact 3 quick fixes to make this path flawless.
+### 1. Update tools.py (Add the missing Amount field)
+Replace update_gnr_state and make sure it has the disputed_amount variable so the AI can actually save it!
+```python
+@tool
+def update_gnr_state(
+    item_type: str = None, 
+    expected_delivery_date: str = None,
+    date_has_passed: bool = None, 
+    merchant_contacted: bool = None,
+    partial_order_received: bool = None, 
+    resolution_preference: str = None,
+    disputed_amount: str = None # <-- I forgot this last time!
+):
+    """Use this tool ONLY for Goods or Services Not Received."""
+    return {
+        "dispute_type": "goods_not_received",
+        "item_type": item_type,
+        "expected_delivery_date": expected_delivery_date,
+        "date_has_passed": date_has_passed,
+        "merchant_contacted": merchant_contacted,
+        "partial_order_received": partial_order_received,
+        "resolution_preference": resolution_preference,
+        "disputed_amount": disputed_amount
+    }
+
+```
+### 2. Update prompts.py (Add the strict rule to prevent fake goodbyes)
+We need to add Step 7 to the GNR prompt, and add a strict rule to the BASE_SYSTEM_PROMPT telling the AI *never* to say goodbye on its own.
+**In BASE_SYSTEM_PROMPT, add these two rules:**
+```python
+# ... (keep rules 1-8 the same)
+9. Every time the user provides new facts, you MUST call the specific tool to save them.
+10. NEVER conclude the conversation, say goodbye, or tell the user their case is logged. The system will handle the final logging automatically.
+
+```
+**In WORKFLOW_RULES, replace the GNR block:**
+```python
+    "goods_not_received": """
+    INTENT: Goods or Services Not Received
+    GOAL: Gather delivery facts to prove the merchant failed to provide the item.
+    
+    REQUIRED STEPS (STRICTLY ask ONE question per turn based on what is missing):
+    1. Ask what type of purchase it was. Give them options: "Was this for a physical item or a digital service?"
+    2. Ask if they were given an expected delivery date.
+    3. Ask if that expected delivery date has already passed.
+    4. Ask if they have attempted to contact the merchant about the order.
+       - IF they have not contacted the merchant: Gently suggest that contacting them first usually helps. Ask them to choose: "Would you like to continue with the dispute, or contact them first?"
+    5. Ask if they have received any part of the order. Give them options: "Have you received a partial order, or nothing at all?"
+    6. Ask how they want to resolve it. Give them options: "Would you like to keep waiting for the order, or request a refund?"
+    7. Finally, ask exactly how much of the amount they would like to dispute.
+    """,
+
+```
+### 3. Update graph.py (Relax the Date constraint)
+Sometimes users don't have an exact delivery date (they just know it is late). If we force the gatekeeper to wait for an exact date string, it might get stuck. Let's make the gatekeeper check only the absolute most important flags.
+**Update the Goods Not Received block inside route_from_text_phase:**
+```python
+    # 3. Goods Not Received Validation
+    elif dtype == "goods_not_received":
+        if (data.get("item_type") and 
+            data.get("date_has_passed") is not None and 
+            data.get("merchant_contacted") is not None and 
+            data.get("partial_order_received") is not None and 
+            data.get("resolution_preference") and
+            data.get("disputed_amount")): # <-- Now it requires the amount!
+            is_ready = True
+
+```
+**What will happen now?**
+Because the tool can now hold the disputed_amount, the moment you type "7504", the tool will update the state. The Gatekeeper will finally see a 100% complete state, instantly cut Ethan off before he can say "Is there anything else?", and push you directly to the Document Upload phase!
+
+
+
+
 You have an incredible eye for detail. This is exactly what "hardening" an AI agent looks like.
 When we look at the HTML chat versus our terminal chat side-by-step, the gaps become obvious:
  1. **Wrong Amount Gap:** In the HTML, the bank needs to know exactly how much money the user *actually wants to claim back* (e.g., "Do you want to dispute the whole $500, or just the $400 difference?"). Our agent never asked that.
