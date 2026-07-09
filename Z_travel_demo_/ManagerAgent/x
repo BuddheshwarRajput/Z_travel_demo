@@ -1,3 +1,72 @@
+You are absolutely right to call this out. The difference is huge, and I missed a massive chunk of your HTML logic for this specific path!
+Here is exactly why the agent rushed through it:
+ 1. **The Tool was too small:** We only gave the wrong_amount tool two variables: expected_amount and disputed_amount.
+ 2. **The LLM got lucky:** When you said *"I was charged 7500 but i was supposed 750"*, the LLM grabbed both numbers at once.
+ 3. **The Router triggered prematurely:** graph.py saw that both variables were filled, declared the text phase 100% complete, and forcefully kicked you to the Evidence phase.
+ 4. **The Evidence text was wrong:** Because we didn't add a specific message for wrong_amount in the ask_for_evidence node, it gave you the generic "tracking info" text instead of asking for your receipt.
+Let's make this path as deep and structured as the HTML file. Here are the precise changes to fix all 4 issues.
+### 1. Update tools.py (Add the missing fields)
+Update the update_wrong_amount_state tool to include the merchant contact and difference reason.
+```python
+@tool
+def update_wrong_amount_state(
+    expected_amount: str = None,
+    disputed_amount: str = None,
+    difference_reason: str = None, # e.g., 'overcharged with no explanation'
+    merchant_contacted: bool = None
+):
+    """Use this tool ONLY when the customer was charged once, but the amount is incorrect."""
+    return {
+        "dispute_type": "wrong_amount",
+        "expected_amount": expected_amount,
+        "disputed_amount": disputed_amount,
+        "difference_reason": difference_reason,
+        "merchant_contacted": merchant_contacted
+    }
+
+```
+### 2. Update prompts.py (Add the missing questions)
+Update the "wrong_amount" block in WORKFLOW_RULES to force the agent to ask the follow-up questions from your HTML.
+```python
+    "wrong_amount": """
+    INTENT: Incorrect Amount Charged
+    GOAL: Identify the discrepancy between the expected and actual price.
+    
+    REQUIRED STEPS (Complete sequentially based on what is missing):
+    1. Ask what amount they originally expected to be charged.
+    2. Ask what amount was actually charged to their account.
+    3. Ask if they know why the amount was different (e.g., overcharged with no explanation).
+    4. Ask if they have contacted the merchant about the difference.
+       - IF they have not contacted the merchant: Gently suggest that merchants can often correct a billing error quickly, but ask if they want to continue the dispute.
+    """,
+
+```
+### 3. Update graph.py (Hold the Gate open)
+In route_from_text_phase, update the wrong_amount validation to ensure it does not proceed until the merchant question is answered.
+**Change this block in route_from_text_phase:**
+```python
+    elif dtype == "wrong_amount":
+        # Force the graph to wait until we know if they contacted the merchant
+        if data.get("disputed_amount") and data.get("expected_amount") and data.get("merchant_contacted") is not None:
+            is_ready = True
+
+```
+### 4. Update graph.py (Fix the Evidence Text)
+In the ask_for_evidence function, add an elif so the bot asks for the correct billing documents from your HTML, rather than tracking info.
+**Add this inside ask_for_evidence:**
+```python
+    elif dtype == "wrong_amount" or dtype == "incorrect_amount":
+        msg = "Please upload your receipt or order confirmation showing the price you agreed to, and the statement showing what was actually taken. (Type file path or 'skip')"
+
+```
+Run test_agent.py again and try the exact same prompt: *"I was charged 7500 but i was supposed 750$"*.
+Because you updated the schema, the bot will absorb the numbers, realize its job isn't done, and naturally ask you: *"Do you know why the amount was different?"* just like the HTML flow!
+
+
+
+
+
+
 I know exactly why Ethan gave you the "silent treatment." It’s actually a brilliant showcase of how LangGraph handles errors in the background.
 ### Why did the agent go completely blank?
 When you typed *"I was charged the wrong amount"*, Claude correctly guessed it needed to use the new update_wrong_amount_state tool. It output a system command to trigger the tool, **which meant its text response was intentionally blank.**
