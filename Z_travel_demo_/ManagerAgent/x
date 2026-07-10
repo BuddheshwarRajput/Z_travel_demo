@@ -1,3 +1,92 @@
+This is the perfect move. By extracting the exact conversational variables from the transcript you provided, we can perfectly map the 6th intent: **"Item not as described / faulty"**.
+Here is exactly what you need to add to your three files to get this intent working flawlessly.
+### 1. The Tool (tools.py)
+Add this new Pydantic schema tool to tools.py. This captures the exact five variables needed to satisfy the business logic in the transcript.
+```python
+@tool
+def update_not_as_described_state(
+    problem_description: str = None,
+    received_when: str = None,
+    merchant_contacted: bool = None,
+    merchant_asked_to_return: bool = None,
+    disputed_amount: str = None
+):
+    """Use this tool ONLY for items that were received but are faulty, damaged, or not as described."""
+    return {
+        "dispute_type": "not_as_described",
+        "problem_description": problem_description,
+        "received_when": received_when,
+        "merchant_contacted": merchant_contacted,
+        "merchant_asked_to_return": merchant_asked_to_return,
+        "disputed_amount": disputed_amount
+    }
+
+```
+### 2. The Prompt Block (prompts.py)
+Add this new key-value pair to your WORKFLOW_RULES dictionary inside prompts.py. This strict set of sequential instructions ensures the LLM will mimic the exact flow of the transcript.
+```python
+    "not_as_described": """
+INTENT: Item not as described / faulty
+GOAL: Gather facts about the faulty/incorrect item and the merchant's response.
+
+REQUIRED STEPS (STRICTLY ask ONE question per turn based on what is missing):
+1. Ask what best describes the problem (e.g., wrong item sent, damaged, poor quality).
+2. Ask when they received the item. Give them options to choose from (e.g., "Was it within the last 30 days, or more than 30 days ago?").
+3. Ask if they have contacted the merchant to ask for a repair, replacement, or refund.
+   IF they have not contacted the merchant: Gently suggest it usually helps to give the merchant a chance to put it right first. Ask them to choose: "Would you like to continue with the dispute, or contact them first?"
+4. Ask if the merchant has asked them to return the item.
+5. Finally, ask exactly how much they are claiming back for this item.
+""",
+
+```
+### 3. The Gatekeeper Validation (graph.py)
+Insert this new elif block into your route_from_text_phase function in graph.py. This ensures the gatekeeper will block the user from moving to the Evidence Phase until all 5 variables are populated by the LLM.
+```python
+    elif dtype == "not_as_described":
+        if (data.get("problem_description") and 
+            data.get("received_when") and 
+            data.get("merchant_contacted") is not None and 
+            data.get("merchant_asked_to_return") is not None and 
+            data.get("disputed_amount")):
+            
+            is_ready = True
+
+```
+### ⚠️ Don't Forget to Register the Tool in graph.py!
+To ensure the Orchestrator actually has access to this new state update function, make sure you update these three small things at the top of your graph.py:
+ 1. **Import it:**
+   ```python
+   from tools import ..., update_not_as_described_state
+   
+   ```
+ 2. **Bind it to the LLM:**
+   ```python
+   llm_with_tools = get_llm().bind_tools([
+       ..., update_not_as_described_state
+   ])
+   
+   ```
+ 3. **Add it to the Node Parser (triage_and_text_gathering):**
+   ```python
+   valid_tools = [
+       ...,
+       "update_not_as_described_state"
+   ]
+   
+   # Add the routing logic below your other tool_call checks
+   elif tool_call["name"] == "update_not_as_described_state": 
+       current_data["dispute_type"] = "not_as_described"
+   
+   ```
+*(Note: Your ask_for_evidence node in graph.py already has the elif dtype == "not_as_described": block perfectly mapped to ask for photos of the item and the receipt, so you don't need to change anything there!)*
+
+
+
+
+
+
+
+
 This is fantastic. By sharing the official Business Backend data dictionary, you’ve ensured that our Front Office AI will flawlessly integrate with the downstream systems.
 I’ve reviewed the data points. While some fields (like txn_date or merchant_name) are pulled automatically from the database, the conversational fields our AI is collecting (like dispute_type, merchant_contacted, disputed_amount) align perfectly with the backend schemas. We will keep using strict snake_case naming conventions for our tools to guarantee a 1-to-1 match when the JSON payload is handed off.
 Now, let's implement the deep tool layers for **"Charged more than once"** (duplicate_charge) and **"I cancelled but was still charged"** (cancelled_booking_charged) based *exactly* on your HTML transcripts.
