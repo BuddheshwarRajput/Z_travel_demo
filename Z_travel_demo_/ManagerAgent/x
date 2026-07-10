@@ -1,3 +1,119 @@
+Yes, absolutely! Testing through a Jupyter Notebook is actually one of the most popular ways Data Scientists and AI Engineers test conversational agents. It allows you to run the conversation cell-by-cell and inspect the JSON payload exactly like your front-end UI will.
+First, ensure your FastAPI server is running in a terminal in the background:
+uvicorn main:app --reload
+Here is exactly how to do both: the Jupyter Notebook approach and the curl terminal approach.
+### Option 1: The Jupyter Notebook Approach
+Open a new Jupyter Notebook (.ipynb file), paste this into the **first cell**, and run it. This creates a reusable helper function.
+```python
+import requests
+import time
+from IPython.display import display, Markdown
+
+URL = "http://127.0.0.1:8000/api/chat"
+SESSION_ID = "notebook_test_001"
+
+def chat_with_ethan(message=None, doc_path=None):
+    payload = {
+        "session_id": SESSION_ID, 
+        "message": message, 
+        "document_path": doc_path
+    }
+    
+    # Hit our FastAPI endpoint
+    response = requests.post(URL, json=payload)
+    data = response.json()
+    
+    # Format the output nicely for the notebook
+    user_text = message if message else f"*[Uploaded Document: {doc_path}]*"
+    display(Markdown(f"**👤 YOU:** {user_text}"))
+    display(Markdown(f"**🤖 ETHAN:** {data.get('ai_response')}"))
+    display(Markdown(f"*`Intent: {data.get('current_intent')} | Complete: {data.get('is_complete')}`*"))
+    print("-" * 60)
+
+```
+Now, in the **next cells**, you can test the exact flow we just built for the faulty_item intent by running them one by one!
+**Cell 2:**
+```python
+chat_with_ethan(message="Hi, I bought something and it's not right.")
+
+```
+**Cell 3:**
+```python
+chat_with_ethan(message="The wrong item was sent to me.")
+
+```
+**Cell 4:**
+```python
+chat_with_ethan(message="I received it within the last 30 days.")
+
+```
+**Cell 5:**
+```python
+chat_with_ethan(message="No, I haven't contacted the merchant yet.")
+
+```
+**Cell 6:**
+```python
+chat_with_ethan(message="Continue with the dispute.")
+
+```
+**Cell 7:**
+```python
+chat_with_ethan(message="No, they haven't asked me to return it.")
+
+```
+**Cell 8:**
+```python
+chat_with_ethan(message="I am claiming $1200 back.")
+
+```
+**Cell 9: (The Document Upload)**
+```python
+chat_with_ethan(doc_path="C:\\Users\\yourname\\Documents\\receipt.png")
+
+```
+*(Once you run Cell 9, is_complete will flip to True and your local_disputes_db.json will be generated!)*
+### Option 2: The curl Commands (Terminal)
+If you want to test directly in the terminal without writing a script, you can use curl.
+*Note: Because you are on Windows, curl commands in the standard Command Prompt (CMD) require strict double-quotes and escaped inner quotes (\").*
+**1. Check if the server is healthy:**
+```cmd
+curl -X GET http://127.0.0.1:8000/health
+
+```
+**2. Send the first chat message (Triage Phase):**
+```cmd
+curl -X POST http://127.0.0.1:8000/api/chat ^
+     -H "Content-Type: application/json" ^
+     -d "{\"session_id\": \"curl_test_001\", \"message\": \"I received a damaged item.\"}"
+
+```
+**3. Send the next message (Faulty Item Workflow):**
+*(Keep the same session_id so LangGraph remembers the chat!)*
+```cmd
+curl -X POST http://127.0.0.1:8000/api/chat ^
+     -H "Content-Type: application/json" ^
+     -d "{\"session_id\": \"curl_test_001\", \"message\": \"It arrived completely smashed.\"}"
+
+```
+**4. Send an Evidence Document (File Path):**
+```cmd
+curl -X POST http://127.0.0.1:8000/api/chat ^
+     -H "Content-Type: application/json" ^
+     -d "{\"session_id\": \"curl_test_001\", \"document_path\": \"C:\\images\\broken_item.png\"}"
+
+```
+Using the Jupyter Notebook is highly recommended because you don't have to deal with escaping all those annoying quotation marks in the Windows terminal, and you can clearly see the state change turn-by-turn!
+
+
+
+
+
+
+
+
+
+
 Yes, absolutely! Testing locally is one of the best parts of this stack.
 Because we are using **FastAPI**, it automatically generates a beautiful, interactive web interface (called Swagger UI) running right on your localhost. Once we write main.py, you will just click a button on your local browser, type a test message, and watch the LangGraph agent run on your machine exactly as it would in production. No Docker required for local testing!
 Here is the exact code for **Step 1** and **Step 2** to establish our foundational contracts and our database switch.
