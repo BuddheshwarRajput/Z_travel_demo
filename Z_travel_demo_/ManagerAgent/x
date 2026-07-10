@@ -1,3 +1,118 @@
+
+You are absolutely right. The internal variable names should always be intuitive, clean, and easy for your engineering and data teams to understand. Changing unauthorized to fraud and not_as_described to faulty_item is a great clean-up step.
+Additionally, swapping out the document count for the actual file paths in the JSON database is a crucial fix for your back-office team so they can actually find the evidence!
+Since these string values are the "connective tissue" of our entire LangGraph architecture, we have to change them carefully across all three files so the routing doesn't break. Here is the exact checklist to update everything smoothly.
+### 1. Update tools.py
+We need to update the dispute_type strings returned by the tools. I also recommend renaming the new tool from update_not_as_described_state to update_faulty_item_state so your code remains perfectly semantic.
+**Make these changes:**
+ * In update_fraud_state: Change "dispute_type": "unauthorized" to "dispute_type": "fraud".
+ * In your new faulty item tool:
+```python
+@tool
+def update_faulty_item_state(
+    problem_description: str = None,
+    received_when: str = None,
+    merchant_contacted: bool = None,
+    merchant_asked_to_return: bool = None,
+    disputed_amount: str = None
+):
+    """Use this tool ONLY for items that were received but are faulty, damaged, or not as described."""
+    return {
+        "dispute_type": "faulty_item", # <-- CHANGED
+        "problem_description": problem_description,
+        "received_when": received_when,
+        "merchant_contacted": merchant_contacted,
+        "merchant_asked_to_return": merchant_asked_to_return,
+        "disputed_amount": disputed_amount
+    }
+
+```
+### 2. Update prompts.py
+We must update the keys in our dictionary so the Triage mechanism injects the correct rules, and we must update the LLM's instructions in the Triage prompt so it uses the new names.
+**Make these changes:**
+ * Change the dictionary key "unauthorized": to "fraud":
+ * Change the dictionary key "not_as_described": to "faulty_item":
+ * At the very bottom, update the triage prompt instructions to reflect the new list of exact strings:
+```python
+    "triage": """
+INTENT: UNKNOWN
+GOAL: Figure out which workflow to trigger.
+
+REQUIRED STEPS:
+1. Ask the customer briefly what went wrong with their transaction.
+2. Once they explain, use the tool to save the `dispute_type` as exactly one of the following: 'fraud', 'cancelled_booking_charged', 'goods_not_received', 'duplicate_charge', 'wrong_amount', or 'faulty_item'.
+"""
+
+```
+### 3. Update graph.py
+We have to adjust the routing logic to look for the new fraud and faulty_item strings, and we need to fix the JSON logging block to save the actual paths.
+**Step A: Update tool mapping in triage_and_text_gathering**
+```python
+        valid_tools = [
+            "update_fraud_state",
+            "update_cancellation_state",
+            "update_gnr_state", 
+            "update_duplicate_state",
+            "update_wrong_amount_state",
+            "update_faulty_item_state" # <-- UPDATED TOOL NAME
+        ]
+
+        if tool_call["name"] in valid_tools:
+            current_data.update(tool_call["args"])
+
+        if tool_call["name"] == "update_fraud_state":
+            current_data["dispute_type"] = "fraud" # <-- CHANGED
+        elif tool_call["name"] == "update_faulty_item_state":
+            current_data["dispute_type"] = "faulty_item" # <-- CHANGED
+
+```
+**Step B: Update the Gatekeeper (route_from_text_phase)**
+Find the if and elif statements checking the dtype and update them:
+```python
+    if dtype == "fraud": # <-- CHANGED
+        if data.get("block_card_consent") is not None and data.get("card_in_possession") is not None:
+            is_ready = True
+            
+    # ... other intents ...
+
+    elif dtype == "faulty_item": # <-- CHANGED
+        if (data.get("problem_description") and 
+            data.get("received_when") and 
+            data.get("merchant_contacted") is not None and 
+            data.get("merchant_asked_to_return") is not None and 
+            data.get("disputed_amount")):
+            is_ready = True
+
+```
+**Step C: Update the Evidence Node (ask_for_evidence)**
+Update the strings here as well:
+```python
+    if dtype == "fraud": # <-- CHANGED
+        msg = "I have secured your account. No documents are needed for this fraud claim."
+        return {"chat_history": [{"role": "assistant", "content": msg}], "ready_for_evidence": True, "skipped_upload": True}
+
+    elif dtype == "faulty_item": # <-- CHANGED
+        msg = "Please upload photos of the item and your receipt. (Type file path or 'skip')"
+
+```
+**Step D: Output File Paths instead of the Count (handoff_to_back_office)**
+Replace the line that uses len() with one that just passes the list of document strings natively.
+```python
+def handoff_to_back_office(state: FOAgentState):
+    """Saves to local JSON Database as a perfectly formatted JSON Array.""" 
+    payload = state.get("extracted_data", {}) 
+    payload["session_id"] = state.get("session_id", "SESSION_TEST") 
+    
+    # CHANGED: Now outputs the list of paths instead of the count
+    payload["document_paths"] = state.get("uploaded_documents", [])
+
+```
+
+
+
+
+
+
 This is the perfect move. By extracting the exact conversational variables from the transcript you provided, we can perfectly map the 6th intent: **"Item not as described / faulty"**.
 Here is exactly what you need to add to your three files to get this intent working flawlessly.
 ### 1. The Tool (tools.py)
