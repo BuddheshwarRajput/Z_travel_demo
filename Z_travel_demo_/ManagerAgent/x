@@ -1,3 +1,107 @@
+Take a deep breath. You are incredibly close, and I know exactly why you are exhausted.
+Please don't worry—your UI is actually working perfectly, but you have run into the classic **"Invisible Bubble" bug**.
+### Why is it repeating your text?
+When we gave the AI the ProvideQuickReplies tool, the LLM got confused. It thought, *"Oh, I just need to use this tool to send buttons!"* **But it forgot to actually open its mouth and speak.** Because the AI's text response (response.content) was blank, your Python backend sent an empty string "" to your HTML. Your HTML happily drew an invisible, empty bubble. So every time you typed, you just saw your own text stacking up against an invisible ghost!
+Since you are tired, **no brainstorming here.** Just copy and paste these exact fixes to combine the Text and the Buttons into ONE mandatory tool, forcing the AI to speak.
+### Step 1: Replace the Tool in tools.py
+Delete that ProvideQuickReplies class we just made, and replace it with this:
+```python
+from pydantic import BaseModel, Field
+from typing import List
+
+class SpeakToUser(BaseModel):
+    """ALWAYS use this tool to respond to the user. It contains your text and your buttons."""
+    ai_response: str = Field(description="The conversational text you want to say to the user.")
+    options: List[str] = Field(description="List of 2 to 4 short quick-reply options. Leave empty if none.", default=[])
+
+```
+*(Make sure to update your llm.bind_tools([..., SpeakToUser]) list so the graph sees the new name!)*
+### Step 2: The Bulletproof Fix in graph.py
+Inside your triage_and_text_gathering function, we are going to catch that new tool, extract the text, and **inject it back into the AI message** so your main.py can actually see it!
+Replace the tool-handling loop in that function with this exact code:
+```python
+from langchain_core.messages import ToolMessage, AIMessage
+
+def triage_and_text_gathering(state: FOAgentState):
+    # ... (Keep your existing prompt setup code here) ...
+    
+    response = llm_with_tools.invoke(formatted_prompt)
+    messages_to_add = [response]
+    tool_calls = getattr(response, "tool_calls", [])
+    
+    suggested_options = []
+    ai_text = response.content # Default to whatever the AI naturally said
+
+    if tool_calls:
+        for tool_call in tool_calls:
+            valid_tools = [
+                "update_fraud_state", "update_cancellation_state",
+                "update_gnr_state", "update_duplicate_state",
+                "update_wrong_amount_state", "update_faulty_item_state"
+            ]
+
+            # 1. CATCH THE NEW SPEAK TOOL!
+            if tool_call["name"] == "SpeakToUser":
+                ai_text = tool_call["args"].get("ai_response", "")
+                suggested_options = tool_call["args"].get("options", [])
+                
+                tool_msg = ToolMessage(
+                    content="Spoke to user.", 
+                    tool_call_id=tool_call["id"], 
+                    name=tool_call["name"]
+                )
+                messages_to_add.append(tool_msg)
+                continue
+
+            # 2. YOUR EXISTING STATE TOOLS
+            if tool_call["name"] in valid_tools:
+                current_data.update(tool_call["args"])
+                # ... (keep your existing elif logic for dispute_type here) ...
+                
+                tool_msg = ToolMessage(
+                    content="State updated successfully.", 
+                    tool_call_id=tool_call["id"], 
+                    name=tool_call["name"]
+                )
+                messages_to_add.append(tool_msg)
+
+    # 3. CRITICAL FIX: If the AI hid the text inside the tool, we MUST put it 
+    # back into the main AIMessage so your FastAPI main.py can easily read it!
+    if not response.content and ai_text:
+        messages_to_add[0] = AIMessage(
+            content=ai_text, 
+            tool_calls=response.tool_calls, 
+            additional_kwargs=response.additional_kwargs
+        )
+
+    return {
+        "chat_history": messages_to_add, 
+        "extracted_data": current_data,
+        "suggested_options": suggested_options 
+    }
+
+```
+### Step 3: A Tiny Safety Net in your HTML (Optional but recommended)
+If you want to ensure your UI *never* draws an invisible bubble again, open your index.html file, find the addBubble function, and add one line:
+```javascript
+function addBubble(sender, html) {
+    if (!html) return; // <--- ADD THIS LINE! Don't draw empty ghosts.
+    const r = document.createElement('div');
+    r.className = 'row ' + sender;
+    r.innerHTML = '<div class="bub">' + html + '</div>';
+    chat.appendChild(r);
+    scrollDown();
+}
+
+```
+**Restart your FastAPI server and refresh your HTML page.** When you click "I never received my order," Ethan will correctly extract the text from the tool, and the UI will successfully draw the text and the new buttons.
+You are doing amazing work connecting these complex systems. Rest up, test this fix, and let me know when you see Ethan's face pop back up!
+
+
+
+
+
+
 ### 1. Why do we need AgentOutput when we already have ChatResponse?
 This is a great question about separation of concerns.
 Think of ChatResponse as your **FastAPI Server (The Bouncer)**, and AgentOutput as your **LLM (The Brain)**.
